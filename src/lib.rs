@@ -9,6 +9,7 @@ pub mod fsutil;
 pub mod media;
 pub mod output;
 pub mod paths;
+pub mod providers;
 pub mod report;
 pub mod run;
 pub mod transcribe;

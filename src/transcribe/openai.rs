@@ -43,6 +43,61 @@ impl OpenAiCompatible {
         }
     }
 
+    /// Replaces every occurrence of the API key in provider-supplied text.
+    fn redact(&self, text: &str) -> String {
+        let key = self.api_key.expose();
+        if key.is_empty() {
+            text.to_owned()
+        } else {
+            text.replace(key, "***")
+        }
+    }
+
+    fn redact_error(&self, error: TranscribeError) -> TranscribeError {
+        match error {
+            TranscribeError::ModelUnsupported { message } => TranscribeError::ModelUnsupported {
+                message: self.redact(&message),
+            },
+            TranscribeError::Retryable {
+                status,
+                message,
+                retry_after_s,
+            } => TranscribeError::Retryable {
+                status,
+                message: self.redact(&message),
+                retry_after_s,
+            },
+            TranscribeError::Fatal { status, message } => TranscribeError::Fatal {
+                status,
+                message: self.redact(&message),
+            },
+            auth @ TranscribeError::Auth { .. } => auth,
+        }
+    }
+
+    fn classify_failure(
+        &self,
+        status: StatusCode,
+        body: &str,
+        retry_after_s: Option<f64>,
+    ) -> TranscribeError {
+        let code = status.as_u16();
+        let message = truncate(&self.redact(&error_message(body)), MAX_ERROR_CHARS);
+        match code {
+            401 | 403 => TranscribeError::Auth { status: code },
+            408 | 429 | 500..=599 => TranscribeError::Retryable {
+                status: Some(code),
+                message: format!("HTTP {code}: {message}"),
+                retry_after_s,
+            },
+            400 if body.contains("verbose_json") => TranscribeError::ModelUnsupported { message },
+            _ => TranscribeError::Fatal {
+                status: Some(code),
+                message,
+            },
+        }
+    }
+
     fn build_request(
         &self,
         chunk: &AudioChunk,
@@ -130,35 +185,13 @@ impl Transcriber for OpenAiCompatible {
                     status: Some(status.as_u16()),
                     message: format!("response is not valid JSON: {e}"),
                 })?;
-            return parse_verbose_json(&value);
+            return parse_verbose_json(&value).map_err(|e| self.redact_error(e));
         }
-        Err(classify_failure(
-            status,
-            &String::from_utf8_lossy(&body),
-            retry_after_s,
-        ))
+        Err(self.classify_failure(status, &String::from_utf8_lossy(&body), retry_after_s))
     }
 
     fn model(&self) -> &str {
         &self.model
-    }
-}
-
-fn classify_failure(status: StatusCode, body: &str, retry_after_s: Option<f64>) -> TranscribeError {
-    let code = status.as_u16();
-    let message = truncate(&error_message(body), MAX_ERROR_CHARS);
-    match code {
-        401 | 403 => TranscribeError::Auth { status: code },
-        408 | 429 | 500..=599 => TranscribeError::Retryable {
-            status: Some(code),
-            message: format!("HTTP {code}: {message}"),
-            retry_after_s,
-        },
-        400 if body.contains("verbose_json") => TranscribeError::ModelUnsupported { message },
-        _ => TranscribeError::Fatal {
-            status: Some(code),
-            message,
-        },
     }
 }
 
@@ -282,6 +315,12 @@ mod tests {
             .and(header("authorization", "Bearer sk-test"))
             .and(body_string_contains("verbose_json"))
             .and(body_string_contains("timestamp_granularities[]"))
+            .and(body_string_contains(
+                "name=\"timestamp_granularities[]\"\r\n\r\nsegment",
+            ))
+            .and(body_string_contains(
+                "name=\"timestamp_granularities[]\"\r\n\r\nword",
+            ))
             .and(body_string_contains("chunk-007.ogg"))
             .and(body_string_contains("audio/ogg"))
             .and(body_string_contains(
@@ -299,6 +338,28 @@ mod tests {
         let (chunk, _dir) = fake_chunk();
         let tr = t.transcribe(&chunk, &opts).await.unwrap();
         assert_eq!(tr.words[0].speaker, Some(0));
+    }
+
+    #[tokio::test]
+    async fn optional_multipart_fields_are_absent_when_unset() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fx("whisper1")))
+            .mount(&server)
+            .await;
+        let (chunk, _dir) = fake_chunk();
+        transcriber(&server, RequestMode::Multipart)
+            .transcribe(&chunk, &TranscribeOptions::default())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&requests[0].body).into_owned();
+        for field in ["language", "prompt", "provider"] {
+            assert!(
+                !body.contains(&format!("name=\"{field}\"")),
+                "{field} should be absent"
+            );
+        }
     }
 
     #[tokio::test]
@@ -333,6 +394,9 @@ mod tests {
             .and(body_string_contains("\"format\":\"ogg\""))
             .and(body_string_contains("\"response_format\":\"verbose_json\""))
             .and(body_string_contains("\"language\":\"fr\""))
+            .and(body_string_contains(
+                r#""timestamp_granularities":["segment","word"]"#,
+            ))
             .and(body_string_contains(
                 r#""provider":{"options":{"xai":{"diarize":true}}}"#,
             ))
@@ -501,6 +565,43 @@ mod tests {
             .unwrap_err();
         assert!(!format!("{err}").contains("sk-test"));
         assert!(!format!("{err:?}").contains("sk-test"));
+
+        // Provider bodies that echo the key are redacted in every error class.
+        for (status, body) in [
+            (503, r#"{"error":{"message":"bad header Bearer sk-test"}}"#),
+            (422, r#"{"error":{"message":"bad header Bearer sk-test"}}"#),
+            (500, "raw body with sk-test inside"),
+            (
+                400,
+                r#"{"error":{"message":"verbose_json rejected for sk-test"}}"#,
+            ),
+            (200, r#"{"error":{"message":"echo sk-test","code":500}}"#),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .mount(&server)
+                .await;
+            let err = transcriber(&server, RequestMode::Multipart)
+                .transcribe(&chunk, &TranscribeOptions::default())
+                .await
+                .unwrap_err();
+            assert!(!format!("{err}").contains("sk-test"), "{status}: {err}");
+            assert!(!format!("{err:?}").contains("sk-test"), "{status}: {err:?}");
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(422)
+                    .set_body_string(r#"{"error":{"message":"Bearer sk-test"}}"#),
+            )
+            .mount(&server)
+            .await;
+        let err = transcriber(&server, RequestMode::Multipart)
+            .transcribe(&chunk, &TranscribeOptions::default())
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("***"));
 
         // Transport failure path too.
         let err = dead_transcriber()

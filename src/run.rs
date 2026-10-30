@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use futures::{StreamExt, TryStreamExt, stream};
 use tokio_util::sync::CancellationToken;
 
+use crate::assemble::words::words_from_segments;
 use crate::assemble::{CueRules, assemble};
 use crate::cache::{CacheParams, ChunkCache, sha256_file};
 use crate::error::SrttyError;
@@ -61,6 +62,12 @@ pub async fn prepare(input: &Path, reporter: &dyn Reporter) -> Result<Prepared, 
     if !input.exists() {
         return Err(SrttyError::Usage(format!(
             "input file not found: {}",
+            input.display()
+        )));
+    }
+    if !input.is_file() {
+        return Err(SrttyError::Usage(format!(
+            "input is not a file: {}",
             input.display()
         )));
     }
@@ -147,14 +154,16 @@ pub async fn run(
     };
     reporter.event(&Event::StageStarted(Stage::Transcribe));
     // Dropping the transcription future on cancel aborts the requests in flight.
-    let transcripts = tokio::select! {
+    let outcomes = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(SrttyError::Interrupted),
         result = transcribe_all(&ctx, &chunks, req.jobs.max(1)) => result?,
     };
-    let cost_usd = transcripts
+    // What this run spent: cached chunks were paid for by an earlier run.
+    let cost_usd = outcomes
         .iter()
-        .filter_map(|t| t.cost_usd)
+        .filter(|o| !o.cached)
+        .filter_map(|o| o.transcript.cost_usd)
         .reduce(|a, b| a + b);
     reporter.event(&Event::StageDone {
         stage: Stage::Transcribe,
@@ -164,11 +173,17 @@ pub async fn run(
             cost_usd.map(|c| format!(", ${c:.4}")).unwrap_or_default()
         ),
     });
-    if transcripts
+    if outcomes
         .iter()
-        .all(|t| t.usability() == Usability::NoSpeech)
+        .all(|o| o.transcript.usability() == Usability::NoSpeech)
     {
         ctx.warn("no speech detected".into());
+    }
+    let mut transcripts: Vec<Transcript> = outcomes.into_iter().map(|o| o.transcript).collect();
+    for (chunk, transcript) in chunks.iter().zip(&mut transcripts) {
+        if let Some(warning) = approximate_unusable(chunk, transcript) {
+            ctx.warn(warning);
+        }
     }
     let warnings = ctx.warnings.into_inner().unwrap_or_else(|p| p.into_inner());
 
@@ -184,11 +199,12 @@ pub async fn run(
         return Err(SrttyError::Interrupted);
     }
     reporter.event(&Event::StageStarted(Stage::Write));
-    let mut files = Vec::new();
-    for (format, path) in output_paths(&prep.input, req.output.as_deref(), &req.formats) {
-        write_atomic(&path, &render(format, &cues, &req.speaker_label))?;
-        files.push(path);
-    }
+    let rendered: Vec<(PathBuf, String)> =
+        output_paths(&prep.input, req.output.as_deref(), &req.formats)
+            .into_iter()
+            .map(|(format, path)| (path, render(format, &cues, &req.speaker_label)))
+            .collect();
+    let files = write_outputs(rendered)?;
     reporter.event(&Event::StageDone {
         stage: Stage::Write,
         detail: files
@@ -209,6 +225,28 @@ pub async fn run(
         elapsed_s: started.elapsed().as_secs_f64(),
         warnings,
     })
+}
+
+/// Writes every output atomically. If one write fails, the files already
+/// written are removed, so a failed run leaves no output behind.
+fn write_outputs(outputs: Vec<(PathBuf, String)>) -> std::io::Result<Vec<PathBuf>> {
+    let mut written: Vec<PathBuf> = Vec::with_capacity(outputs.len());
+    for (path, content) in outputs {
+        if let Err(e) = write_atomic(&path, &content) {
+            for file in &written {
+                let _ = std::fs::remove_file(file);
+            }
+            return Err(e);
+        }
+        written.push(path);
+    }
+    Ok(written)
+}
+
+/// A chunk's transcript and whether it came from the cache.
+struct ChunkOutcome {
+    transcript: Transcript,
+    cached: bool,
 }
 
 /// What every chunk transcription shares within a run.
@@ -238,12 +276,12 @@ async fn transcribe_all(
     ctx: &ChunkContext<'_>,
     chunks: &[AudioChunk],
     jobs: usize,
-) -> Result<Vec<Transcript>, SrttyError> {
-    let mut transcripts = Vec::with_capacity(chunks.len());
+) -> Result<Vec<ChunkOutcome>, SrttyError> {
+    let mut outcomes = Vec::with_capacity(chunks.len());
     for chunk in chunks {
-        let transcript = transcribe_chunk(ctx, chunk).await?;
-        let usability = transcript.usability();
-        transcripts.push(transcript);
+        let outcome = transcribe_chunk(ctx, chunk).await?;
+        let usability = outcome.transcript.usability();
+        outcomes.push(outcome);
         match usability {
             Usability::Words | Usability::FineSegments => break,
             Usability::NoSpeech => {}
@@ -255,7 +293,7 @@ async fn transcribe_all(
         }
     }
 
-    let mut rest: Vec<(usize, Transcript)> = stream::iter(&chunks[transcripts.len()..])
+    let mut rest: Vec<(usize, ChunkOutcome)> = stream::iter(&chunks[outcomes.len()..])
         .map(|chunk| async move {
             Ok::<_, SrttyError>((chunk.index, transcribe_chunk(ctx, chunk).await?))
         })
@@ -263,15 +301,16 @@ async fn transcribe_all(
         .try_collect()
         .await?;
     rest.sort_by_key(|(index, _)| *index);
-    transcripts.extend(rest.into_iter().map(|(_, t)| t));
-    Ok(transcripts)
+    outcomes.extend(rest.into_iter().map(|(_, o)| o));
+    Ok(outcomes)
 }
 
-/// Returns the cached transcript of `chunk`, or cuts and transcribes it and caches the result.
+/// Returns the cached transcript of `chunk`, or cuts and transcribes it and caches
+/// the result. Unusable transcripts are not cached, so a later run retries them.
 async fn transcribe_chunk(
     ctx: &ChunkContext<'_>,
     chunk: &AudioChunk,
-) -> Result<Transcript, SrttyError> {
+) -> Result<ChunkOutcome, SrttyError> {
     if let Some(transcript) = ctx.cache.get(&ctx.key, chunk) {
         ctx.reporter.event(&Event::ChunkDone {
             index: chunk.index,
@@ -280,14 +319,19 @@ async fn transcribe_chunk(
             cost_usd: transcript.cost_usd,
             cached: true,
         });
-        return Ok(transcript);
+        return Ok(ChunkOutcome {
+            transcript,
+            cached: true,
+        });
     }
     ctx.reporter.event(&Event::ChunkStarted(chunk.index));
     cut_chunk(ctx.audio, chunk.start_s, chunk.end_s, &chunk.path).await?;
     let started = Instant::now();
     let transcript = transcribe_with_retry(ctx.transcriber, chunk, ctx.opts, ctx.reporter).await?;
     let secs = started.elapsed().as_secs_f64();
-    if let Err(e) = ctx.cache.put(&ctx.key, chunk, &transcript) {
+    if transcript.usability() != Usability::Unusable
+        && let Err(e) = ctx.cache.put(&ctx.key, chunk, &transcript)
+    {
         ctx.warn(format!("could not cache chunk {}: {e}", chunk.index + 1));
     }
     ctx.reporter.event(&Event::ChunkDone {
@@ -297,7 +341,37 @@ async fn transcribe_chunk(
         cost_usd: transcript.cost_usd,
         cached: false,
     });
-    Ok(transcript)
+    Ok(ChunkOutcome {
+        transcript,
+        cached: false,
+    })
+}
+
+/// Keeps the text of an `Unusable` transcript by spreading its words over its
+/// segments. Returns the warning to show, or `None` for any other transcript.
+fn approximate_unusable(chunk: &AudioChunk, t: &mut Transcript) -> Option<String> {
+    if t.usability() != Usability::Unusable {
+        return None;
+    }
+    let span = format!(
+        "chunk {} ({}-{})",
+        chunk.index + 1,
+        mm_ss(chunk.start_s),
+        mm_ss(chunk.end_s)
+    );
+    let words = words_from_segments(&t.segments);
+    if words.is_empty() {
+        return Some(format!("{span}: no word timestamps, text omitted"));
+    }
+    t.words = words;
+    Some(format!(
+        "{span}: no word timestamps, timings approximated from segments"
+    ))
+}
+
+fn mm_ss(s: f64) -> String {
+    let secs = s.max(0.0) as u64;
+    format!("{:02}:{:02}", secs / 60, secs % 60)
 }
 
 fn word_count(t: &Transcript) -> usize {
@@ -530,6 +604,24 @@ mod tests {
         }
     }
 
+    /// Chunk `index` as planned in the recorded `ChunksPlanned` event.
+    fn planned_chunk(rec: &Recorder, index: usize) -> AudioChunk {
+        let (start_s, end_s) = rec
+            .events()
+            .into_iter()
+            .find_map(|e| match e {
+                Event::ChunksPlanned(plan) => Some(plan[index]),
+                _ => None,
+            })
+            .unwrap();
+        AudioChunk {
+            index,
+            start_s,
+            end_s,
+            path: "unused".into(),
+        }
+    }
+
     fn three_chunks(make: impl Fn(usize) -> Reply) -> Vec<(usize, Vec<Reply>)> {
         (0..3).map(|i| (i, vec![make(i)])).collect()
     }
@@ -538,7 +630,10 @@ mod tests {
     async fn happy_path_writes_srt_and_uses_cache_on_rerun() {
         let env = Env::new();
         let fake = Arc::new(Fake::new(three_chunks(|_| {
-            Ok(words_transcript("Bonjour."))
+            Ok(Transcript {
+                cost_usd: Some(0.01),
+                ..words_transcript("Bonjour.")
+            })
         })));
         let rec = Arc::new(Recorder::default());
         let summary = env
@@ -551,6 +646,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(summary.chunks, 3);
+        assert!((summary.cost_usd.unwrap() - 0.03).abs() < 1e-9);
         assert_eq!(summary.files, vec![env.out("srt")]);
         assert_eq!(summary.model, "fake-model");
         assert_eq!(summary.provider, "fake");
@@ -574,6 +670,7 @@ mod tests {
             .unwrap();
         assert_eq!(empty.calls(), 0);
         assert_eq!(again.chunks, 3);
+        assert_eq!(again.cost_usd, None, "cached chunks cost nothing this run");
         let cached = rec
             .events()
             .iter()
@@ -731,20 +828,7 @@ mod tests {
         assert!(matches!(err, SrttyError::Interrupted), "{err:?}");
         assert!(!env.out("srt").exists());
 
-        let (start_s, end_s) = rec
-            .events()
-            .into_iter()
-            .find_map(|e| match e {
-                Event::ChunksPlanned(plan) => Some(plan[0]),
-                _ => None,
-            })
-            .unwrap();
-        let chunk0 = AudioChunk {
-            index: 0,
-            start_s,
-            end_s,
-            path: "unused".into(),
-        };
+        let chunk0 = planned_chunk(&rec, 0);
         let key = ChunkCache::run_key(&sha256_file(&env.input).unwrap(), &params());
         assert!(env.cache().get(&key, &chunk0).is_some());
     }
@@ -758,6 +842,99 @@ mod tests {
         assert_eq!(backoff_s(1, Some(120.0)), MAX_BACKOFF_S);
         assert_eq!(backoff_s(1, Some(-3.0)), 0.0);
         assert_eq!(backoff_s(2, Some(f64::NAN)), 2.0);
+    }
+
+    #[tokio::test]
+    async fn unusable_chunk_after_probe_keeps_its_text_with_warning() {
+        let env = Env::new();
+        let unusable = parse_verbose_json(&fx("assemblyai")).unwrap();
+        let fake = Arc::new(Fake::new(vec![
+            (0, vec![Ok(words_transcript("Bonjour."))]),
+            (1, vec![Ok(unusable)]),
+            (2, vec![Ok(words_transcript("Au revoir."))]),
+        ]));
+        let rec = Arc::new(Recorder::default());
+        let summary = env
+            .run(
+                env.request(vec![Format::Srt]),
+                &fake,
+                &rec,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let srt = std::fs::read_to_string(env.out("srt")).unwrap();
+        assert!(srt.contains("Barbe-Bleue"), "{srt}");
+        let chunk1 = planned_chunk(&rec, 1);
+        let warning = summary
+            .warnings
+            .iter()
+            .find(|w| w.starts_with("chunk 2 ("))
+            .expect("warning for chunk 2");
+        assert!(
+            warning.ends_with("): no word timestamps, timings approximated from segments"),
+            "{warning}"
+        );
+        assert!(rec.events().contains(&Event::Warning(warning.clone())));
+        let key = ChunkCache::run_key(&sha256_file(&env.input).unwrap(), &params());
+        assert!(
+            env.cache().get(&key, &chunk1).is_none(),
+            "an unusable transcript must not be cached"
+        );
+        assert!(env.cache().get(&key, &planned_chunk(&rec, 0)).is_some());
+    }
+
+    #[test]
+    fn unusable_transcript_without_segments_has_its_text_omitted() {
+        let chunk = AudioChunk {
+            index: 4,
+            start_s: 65.0,
+            end_s: 130.5,
+            path: "unused".into(),
+        };
+        let mut t = Transcript {
+            text: "Some text without any timing.".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            approximate_unusable(&chunk, &mut t),
+            Some("chunk 5 (01:05-02:10): no word timestamps, text omitted".to_string())
+        );
+        assert!(t.words.is_empty());
+
+        let mut usable = words_transcript("Bonjour.");
+        assert_eq!(approximate_unusable(&chunk, &mut usable), None);
+    }
+
+    #[tokio::test]
+    async fn failed_write_removes_outputs_of_this_run() {
+        let env = Env::new();
+        let fake = Arc::new(Fake::new(three_chunks(|_| {
+            Ok(words_transcript("Bonjour."))
+        })));
+        let rec = Arc::new(Recorder::default());
+        let base = env.dir.path().join("out");
+        // `out.vtt` is a directory, so writing the second format fails.
+        std::fs::create_dir(env.dir.path().join("out.vtt")).unwrap();
+        let mut req = env.request(vec![Format::Srt, Format::Vtt]);
+        req.output = Some(base);
+        let err = env
+            .run(req, &fake, &rec, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SrttyError::Io(_)), "{err:?}");
+        assert!(!env.dir.path().join("out.srt").exists());
+    }
+
+    #[tokio::test]
+    async fn directory_input_is_usage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = prepare(dir.path(), &Recorder::default())
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(err, SrttyError::Usage(_)), "{err:?}");
+        assert_eq!(err.exit_code(), 1);
     }
 
     #[tokio::test]

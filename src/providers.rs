@@ -100,7 +100,7 @@ pub fn parse_openrouter_models(v: &Value) -> Vec<ListedModel> {
             let pricing = &entry["pricing"];
             let per_second = price(&pricing["completion"]) == Some(0.0);
             let usd_per_s = if per_second {
-                price(&pricing["prompt"])
+                price(&pricing["prompt"]).filter(|p| p.is_finite() && *p >= 0.0)
             } else {
                 None
             };
@@ -257,7 +257,26 @@ mod tests {
             models[0].url.as_deref(),
             Some("https://openrouter.ai/google/gemini-3.5-transcribe")
         );
+        // "0.36" $/s is upstream data (OpenRouter), kept as is.
         assert_eq!(models[1].usd_per_s, Some(0.36));
+    }
+
+    #[test]
+    fn invalid_per_second_prices_are_dropped() {
+        let entry = |id: &str, prompt: &str| {
+            json!({"id": id, "architecture": {"output_modalities": ["transcription"]},
+                   "pricing": {"prompt": prompt, "completion": "0"}})
+        };
+        let v = json!({"data": [entry("a/neg", "-1"), entry("a/nan", "nan"),
+                                entry("a/inf", "inf"), entry("a/abc", "abc"),
+                                entry("a/ok", "0.001")]});
+        let models = parse_openrouter_models(&v);
+        let by_id = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+        for id in ["a/neg", "a/nan", "a/inf", "a/abc"] {
+            assert_eq!(by_id(id).usd_per_s, None, "{id}");
+            assert!(!by_id(id).token_priced, "{id}");
+        }
+        assert_eq!(by_id("a/ok").usd_per_s, Some(0.001));
     }
 
     #[test]
@@ -327,8 +346,14 @@ mod tests {
             .mount(&server)
             .await;
         let base = format!("{}/api/v1", server.uri());
-        let models = list_models(Listing::OpenRouter, &base, None).await.unwrap();
+        let key = ApiKey("sk-test-4242".to_string());
+        let models = list_models(Listing::OpenRouter, &base, Some(&key))
+            .await
+            .unwrap();
         assert_eq!(models.len(), 4);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].headers.contains_key("authorization"));
     }
 
     #[tokio::test]

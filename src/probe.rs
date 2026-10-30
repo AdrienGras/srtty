@@ -59,8 +59,10 @@ pub fn classify(
         }
         Err(e @ TranscribeError::Auth { .. }) => return Err(e),
         Err(TranscribeError::ModelUnsupported { .. }) => Verdict::Incompatible,
+        // Only these statuses say the request itself is unsupported. 402, 404,
+        // 413... can come from credits, routing or size: no conclusion.
         Err(TranscribeError::Fatal {
-            status: Some(400..=499),
+            status: Some(400 | 415 | 422),
             ..
         }) => Verdict::Incompatible,
         Err(e @ (TranscribeError::Fatal { .. } | TranscribeError::Retryable { .. })) => {
@@ -118,7 +120,9 @@ pub async fn probe_model(
 
 /// Asks for diarization with `option` and counts the voices in the answer.
 /// `Some(true)` for two voices or more, `Some(false)` for a usable answer with
-/// fewer, `None` when nothing can be concluded.
+/// fewer, `None` when nothing can be concluded. Any error other than `Auth`
+/// (`ModelUnsupported`, 4xx, 5xx, transport) yields `None`: inconclusive, the
+/// caller keeps its previous value.
 pub async fn probe_diarization(
     t: &dyn Transcriber,
     sample: &AudioChunk,
@@ -199,14 +203,26 @@ mod tests {
             classify(Err(bad_request)).unwrap().verdict,
             Verdict::Incompatible
         ));
-        let server = TranscribeError::Fatal {
-            status: Some(500),
-            message: "x".into(),
-        };
-        assert!(matches!(
-            classify(Err(server)).unwrap().verdict,
-            Verdict::Inconclusive(_)
-        ));
+        for status in [Some(415), Some(422)] {
+            let e = TranscribeError::Fatal {
+                status,
+                message: "x".into(),
+            };
+            assert!(matches!(
+                classify(Err(e)).unwrap().verdict,
+                Verdict::Incompatible
+            ));
+        }
+        for status in [Some(402), Some(404), Some(413), Some(500), None] {
+            let e = TranscribeError::Fatal {
+                status,
+                message: "x".into(),
+            };
+            assert!(
+                matches!(classify(Err(e)).unwrap().verdict, Verdict::Inconclusive(_)),
+                "status {status:?}"
+            );
+        }
         let gone = TranscribeError::Retryable {
             status: Some(503),
             message: "x".into(),

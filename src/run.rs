@@ -22,7 +22,7 @@ use crate::transcribe::{
 };
 
 /// Silences this far from a chunk target, in seconds, can still be used as cut points.
-const SILENCE_WINDOW_S: f64 = 30.0;
+pub(crate) const SILENCE_WINDOW_S: f64 = 30.0;
 /// Attempts per chunk on transient failures, the first one included.
 const MAX_ATTEMPTS: u32 = 4;
 /// Longest wait between two attempts, in seconds.

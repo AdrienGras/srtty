@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
 use crate::error::SrttyError;
@@ -18,7 +18,7 @@ pub struct Config {
     pub confirm_above_usd: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
     #[default]
@@ -26,7 +26,7 @@ pub enum ProviderKind {
     Local,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RequestMode {
     #[default]
@@ -46,7 +46,7 @@ pub struct ProviderConfig {
     pub model_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SubtitleConfig {
     pub max_chars_per_line: usize,

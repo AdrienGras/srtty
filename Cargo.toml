@@ -13,7 +13,7 @@ local = []
 clap = { version = "4.6", features = ["derive"] }
 miette = { version = "7", features = ["fancy"] }
 thiserror = "2"
-tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "process", "fs", "time"] }
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "process", "fs", "time", "signal"] }
 etcetera = "0.11"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
@@ -27,4 +27,6 @@ futures = "0.3"
 tempfile = "3"
 
 [dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
 wiremock = "0.6"

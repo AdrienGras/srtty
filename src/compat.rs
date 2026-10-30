@@ -95,9 +95,25 @@ pub fn estimate_cost_usd(entry: Option<&CompatEntry>, duration_s: f64) -> Option
 
 /// `SRTTY_COMPAT_URL` when set and non-empty, else `COMPAT_URL`.
 pub fn compat_url() -> String {
-    match std::env::var("SRTTY_COMPAT_URL") {
-        Ok(v) if !v.is_empty() => v,
+    compat_url_from(&|k| std::env::var(k).ok())
+}
+
+/// Same as `compat_url`, reading variables through `get`.
+pub fn compat_url_from(get: &dyn Fn(&str) -> Option<String>) -> String {
+    match get("SRTTY_COMPAT_URL") {
+        Some(v) if !v.is_empty() => v,
         _ => COMPAT_URL.to_string(),
+    }
+}
+
+/// Short cause for a failed request, without the URL.
+fn describe(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "timed out".to_string()
+    } else if e.is_connect() {
+        "connection failed".to_string()
+    } else {
+        e.without_url().to_string()
     }
 }
 
@@ -143,17 +159,13 @@ async fn fetch_remote(url: &str, timeout: Duration) -> Result<(CompatList, Strin
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| e.without_url().to_string())?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.without_url().to_string())?;
+        .map_err(describe)?;
+    let resp = client.get(url).send().await.map_err(describe)?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("HTTP {}", status.as_u16()));
     }
-    let body = resp.text().await.map_err(|e| e.without_url().to_string())?;
+    let body = resp.text().await.map_err(describe)?;
     let list = parse_compat(&body).map_err(|e| format!("invalid list: {e}"))?;
     Ok((list, body))
 }
@@ -394,6 +406,11 @@ mod tests {
             ),
             ("slow", slow),
         ];
+        let expected_cause = |name: &str| match name {
+            "404" => "HTTP 404",
+            "slow" => "timed out",
+            _ => "invalid list",
+        };
         for (name, template) in cases {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
@@ -413,6 +430,7 @@ mod tests {
             let w = r.warning.expect(name);
             assert!(w.contains("could not refresh"), "{name}: {w}");
             assert!(w.contains("cached-copy"), "{name}: {w}");
+            assert!(w.contains(expected_cause(name)), "{name}: {w}");
             assert_eq!(
                 std::fs::read_to_string(dir.path().join("compat.json")).unwrap(),
                 cached,
@@ -437,7 +455,10 @@ mod tests {
         )
         .await;
         assert_eq!(r.source, CompatSource::Cache);
-        assert!(r.warning.unwrap().contains("could not refresh"));
+        let w = r.warning.unwrap();
+        assert!(w.contains("could not refresh"), "{w}");
+        assert!(w.contains("connection failed"), "{w}");
+        assert!(!w.contains("127.0.0.1"), "{w}");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("compat.json")).unwrap(),
             cached
@@ -472,15 +493,40 @@ mod tests {
     }
 
     #[test]
-    fn compat_url_honours_the_env_override() {
-        // Only this test touches SRTTY_COMPAT_URL.
-        unsafe { std::env::remove_var("SRTTY_COMPAT_URL") };
-        assert_eq!(compat_url(), COMPAT_URL);
-        unsafe { std::env::set_var("SRTTY_COMPAT_URL", "") };
-        assert_eq!(compat_url(), COMPAT_URL);
-        unsafe { std::env::set_var("SRTTY_COMPAT_URL", "http://x/y.json") };
-        assert_eq!(compat_url(), "http://x/y.json");
-        unsafe { std::env::remove_var("SRTTY_COMPAT_URL") };
+    fn compat_url_honours_the_override() {
+        assert_eq!(compat_url_from(&|_| None), COMPAT_URL);
+        assert_eq!(compat_url_from(&|_| Some(String::new())), COMPAT_URL);
+        assert_eq!(
+            compat_url_from(&|k| (k == "SRTTY_COMPAT_URL").then(|| "http://x/y.json".to_string())),
+            "http://x/y.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_turns_a_cache_write_failure_into_a_warning() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/compat.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"schema":1,"generated_at":"2026-11-02","models":[]}"#),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
+        let r = refresh(
+            &blocker.join("cache"),
+            &format!("{}/compat.json", server.uri()),
+            REFRESH_TIMEOUT,
+        )
+        .await;
+        assert_eq!(r.source, CompatSource::Embedded);
+        let w = r.warning.unwrap();
+        assert!(w.contains("could not refresh"), "{w}");
+        assert!(w.contains("could not write the cache"), "{w}");
+        assert!(w.contains("the embedded copy from"), "{w}");
     }
 
     #[test]

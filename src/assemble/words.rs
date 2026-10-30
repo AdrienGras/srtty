@@ -23,7 +23,7 @@ fn norm(s: &str) -> String {
 }
 
 /// Gives each whitespace-separated word of `text` the timing of the tokens that spell it.
-/// Returns `None` when the tokens do not spell `text`.
+/// Returns `None` when the tokens do not spell `text`, including when tokens are left over.
 pub fn align_text(text: &str, tokens: &[Word]) -> Option<Vec<Word>> {
     let mut i = 0;
     let mut out: Vec<Word> = Vec::new();
@@ -73,6 +73,9 @@ pub fn align_text(text: &str, tokens: &[Word]) -> Option<Vec<Word>> {
             text,
             speaker: first.speaker,
         });
+    }
+    if tokens[i..].iter().any(|t| !norm(&t.text).is_empty()) {
+        return None;
     }
     Some(out)
 }
@@ -236,5 +239,44 @@ mod tests {
         assert_eq!(w.len(), 2);
         assert!((w[0].end - 11.0).abs() < 1e-9 && (w[1].end - 14.0).abs() < 1e-9);
         assert_eq!(w[1].speaker, Some(1));
+    }
+
+    #[test]
+    fn leftover_tokens_make_alignment_fail_and_fall_back_to_merge() {
+        let tok = |s: &str, a: f64, b: f64| Word {
+            start: a,
+            end: b,
+            text: s.into(),
+            speaker: None,
+        };
+        let words = vec![
+            tok("un", 0.0, 0.2),
+            tok("deux", 0.3, 0.5),
+            tok("trois", 0.6, 0.9),
+        ];
+        assert!(align_text("un deux", &words).is_none());
+        let tr = Transcript {
+            text: "un deux".into(),
+            words,
+            ..Default::default()
+        };
+        assert_eq!(normalize_words(&tr).len(), 3);
+    }
+
+    #[test]
+    fn leading_punctuation_becomes_prefix_of_next_word() {
+        let tok = |s: &str, a: f64, b: f64| Word {
+            start: a,
+            end: b,
+            text: s.into(),
+            speaker: None,
+        };
+        let w = align_text(
+            "« Bonjour toi",
+            &[tok("Bonjour", 0.0, 0.5), tok("toi", 0.6, 0.9)],
+        )
+        .unwrap();
+        assert_eq!(w[0].text, "« Bonjour");
+        assert_eq!(w[0].start, 0.0);
     }
 }

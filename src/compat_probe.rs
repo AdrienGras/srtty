@@ -88,16 +88,76 @@ fn valid_cost(reported: Option<f64>) -> Option<f64> {
     reported.filter(|c| c.is_finite() && *c >= 0.0)
 }
 
-/// Keeps the previous entry of `id`, if there was one, and says why.
+/// Keeps the previous entry of `model`, if there was one, at the price the
+/// listing states now, and says why.
 fn keep(
     models: &mut Vec<CompatEntry>,
     report: &mut ProbeReport,
     old: Option<&CompatEntry>,
-    id: &str,
+    model: &ListedModel,
     why: &str,
 ) {
-    models.extend(old.cloned());
-    report.kept.push((id.to_string(), why.to_string()));
+    models.extend(old.cloned().map(|e| CompatEntry {
+        usd_per_hour: per_hour(model.usd_per_s),
+        ..e
+    }));
+    report.kept.push((model.id.clone(), why.to_string()));
+}
+
+/// Hourly price for a listed per-second price; `None` when the listing has
+/// no usable one (token-priced, negative or not finite).
+fn per_hour(usd_per_s: Option<f64>) -> Option<f64> {
+    usd_per_s
+        .filter(|p| p.is_finite() && *p >= 0.0)
+        .map(|p| p * 3600.0)
+}
+
+/// Fewest previously compatible models, probed conclusively, for the
+/// mass-demotion guard to apply.
+const DEMOTION_MIN_MODELS: usize = 4;
+
+/// Refuses a run in which more than half of the previously compatible models
+/// probed conclusively are now incompatible or unusable: a broken endpoint or
+/// sample is likelier than a mass regression.
+fn check_demotions(
+    previous: &CompatList,
+    new: &CompatList,
+    report: &ProbeReport,
+) -> Result<(), SrttyError> {
+    let conclusive = |id: &str| {
+        report.probed.iter().any(|p| p == id) && !report.kept.iter().any(|(k, _)| k == id)
+    };
+    let checked: Vec<&str> = previous
+        .models
+        .iter()
+        .filter(|e| e.provider == PROVIDER && e.status == CompatStatus::Compatible)
+        .map(|e| e.id.as_str())
+        .filter(|id| conclusive(id))
+        .collect();
+    let failed = checked
+        .iter()
+        .filter(|id| {
+            matches!(
+                new.find(PROVIDER, id).map(|e| e.status),
+                Some(CompatStatus::Incompatible | CompatStatus::Unusable)
+            )
+        })
+        .count();
+    let total = checked.len();
+    if total >= DEMOTION_MIN_MODELS && failed * 2 > total {
+        return Err(SrttyError::Network(format!(
+            "{failed} of {total} compatible models failed this run; compat.json left unchanged"
+        )));
+    }
+    Ok(())
+}
+
+/// A warning for each `--only` id the listing does not have.
+fn unlisted_only(only: &[String], listed: &[ListedModel]) -> Vec<String> {
+    only.iter()
+        .filter(|id| !listed.iter().any(|m| &m.id == *id))
+        .map(|id| format!("{id}: not in the OpenRouter listing"))
+        .collect()
 }
 
 /// Probes the listed models and merges the answers with `previous`.
@@ -122,24 +182,24 @@ pub async fn probe_all(
         let id = model.id.as_str();
         let old = previous.find(PROVIDER, id);
         if report.budget_exhausted {
-            keep(&mut models, &mut report, old, id, "budget");
+            keep(&mut models, &mut report, old, model, "budget");
             continue;
         }
         if !policy.only.is_empty() && !policy.only.iter().any(|o| o == id) {
-            keep(&mut models, &mut report, old, id, "not selected");
+            keep(&mut models, &mut report, old, model, "not selected");
             continue;
         }
         let Some(rate) = model
             .usd_per_s
             .filter(|p| p.is_finite() && *p >= 0.0 && *p <= policy.max_usd_per_s)
         else {
-            keep(&mut models, &mut report, old, id, "price");
+            keep(&mut models, &mut report, old, model, "price");
             continue;
         };
         let estimate = rate * SAMPLE_S;
         if report.spent_usd + estimate > policy.budget_usd {
             report.budget_exhausted = true;
-            keep(&mut models, &mut report, old, id, "budget");
+            keep(&mut models, &mut report, old, model, "budget");
             continue;
         }
 
@@ -148,7 +208,7 @@ pub async fn probe_all(
         report.spent_usd += charged(outcome.cost_usd, estimate);
         let (status, words, fine_segments) = match outcome.verdict {
             Verdict::Inconclusive(why) => {
-                keep(&mut models, &mut report, old, id, &why);
+                keep(&mut models, &mut report, old, model, &why);
                 continue;
             }
             Verdict::Usable {
@@ -284,7 +344,8 @@ fn model_line(
     cost: Option<(f64, bool)>,
 ) -> String {
     let outcome = match report.kept.iter().find(|(kept, _)| kept == id) {
-        Some((_, why)) => format!("kept ({why})"),
+        Some((_, why)) if new.find(PROVIDER, id).is_some() => format!("kept ({why})"),
+        Some((_, why)) => format!("skipped ({why})"),
         None => {
             let entry = new.find(PROVIDER, id);
             let status = match entry.map(|e| e.status) {
@@ -342,6 +403,9 @@ pub async fn run(args: &ProbeArgs) -> Result<(), SrttyError> {
             "the OpenRouter model listing is empty; compat.json left unchanged".into(),
         ));
     }
+    for warning in unlisted_only(&args.only, &listed) {
+        writeln!(std::io::stderr(), "{warning}")?;
+    }
     let previous = match std::fs::read_to_string(&args.output) {
         Ok(text) => parse_compat(&text)
             .map_err(|e| SrttyError::Config(format!("{}: {e}", args.output.display())))?,
@@ -383,6 +447,7 @@ pub async fn run(args: &ProbeArgs) -> Result<(), SrttyError> {
         "spent ${:.4} of ${:.2}",
         report.spent_usd, policy.budget_usd
     )?;
+    check_demotions(&previous, &new, &report)?;
     if same_content(&new, &previous) {
         writeln!(err, "compat.json unchanged")?;
     } else {
@@ -485,6 +550,14 @@ mod tests {
         }
     }
 
+    /// `e` at the hourly price of `usd_per_s`, as a kept entry is written.
+    fn repriced(e: &CompatEntry, usd_per_s: Option<f64>) -> CompatEntry {
+        CompatEntry {
+            usd_per_hour: usd_per_s.map(|p| p * 3600.0),
+            ..e.clone()
+        }
+    }
+
     fn list(models: Vec<CompatEntry>) -> CompatList {
         CompatList {
             schema: COMPAT_SCHEMA,
@@ -573,7 +646,13 @@ mod tests {
             .await
             .unwrap();
         assert!(prober.calls().is_empty());
-        assert_eq!(new.models, previous.models);
+        assert_eq!(
+            new.models,
+            [
+                repriced(&previous.models[0], Some(0.002)),
+                repriced(&previous.models[1], None)
+            ]
+        );
         assert_eq!(
             report.kept,
             [
@@ -601,7 +680,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(prober.calls(), ["probe b/two"]);
-        assert_eq!(new.models[0], previous.models[0]);
+        assert_eq!(new.models[0], repriced(&previous.models[0], Some(0.0001)));
         assert_eq!(new.models[1].status, CompatStatus::Unusable);
         assert_eq!(
             report.kept,
@@ -642,8 +721,8 @@ mod tests {
         assert_eq!(report.kept.len(), 2);
         assert!(report.kept.iter().all(|(_, why)| why == "budget"));
         assert!((report.spent_usd - 0.0015).abs() < 1e-9);
-        assert_eq!(new.models[1], previous.models[1]);
-        assert_eq!(new.models[2], previous.models[2]);
+        assert_eq!(new.models[1], repriced(&previous.models[1], Some(0.00005)));
+        assert_eq!(new.models[2], repriced(&previous.models[2], Some(0.00005)));
         assert_eq!(new.models[0].checked_at.as_deref(), Some("2030-05-06"));
     }
 
@@ -682,7 +761,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(new.models, previous.models);
+        assert_eq!(new.models, [repriced(&previous.models[0], Some(0.0001))]);
         assert_eq!(new.models[0].checked_at.as_deref(), Some("2020-01-01"));
         assert_eq!(report.probed, ["a/1"]);
         assert_eq!(report.kept, [("a/1".to_string(), "HTTP 503".to_string())]);
@@ -807,7 +886,7 @@ mod tests {
         assert!(report.budget_exhausted);
         assert_eq!(new.models[0].status, CompatStatus::Compatible);
         assert_eq!(new.models[0].diarization, old_a.diarization);
-        assert_eq!(new.models[1], previous.models[1]);
+        assert_eq!(new.models[1], repriced(&previous.models[1], Some(0.0001)));
         assert_eq!(report.kept, [("b/2".to_string(), "budget".to_string())]);
     }
 
@@ -908,5 +987,163 @@ mod tests {
         let mut c = a.clone();
         c.models.pop();
         assert!(!same_content(&a, &c));
+    }
+
+    #[tokio::test]
+    async fn kept_entries_take_the_current_price() {
+        let prober = FakeProber {
+            outcomes: HashMap::from([(
+                "d/inconclusive".into(),
+                outcome(Verdict::Inconclusive("HTTP 503".into())),
+            )]),
+            ..Default::default()
+        };
+        let ids = [
+            "a/dear",
+            "b/tokens",
+            "c/other",
+            "d/inconclusive",
+            "e/budget",
+        ];
+        let previous = list(
+            ids.iter()
+                .map(|id| entry("openrouter", id, CompatStatus::Compatible))
+                .collect(),
+        );
+        let models = [
+            listed("a/dear", Some(0.002)),
+            listed("b/tokens", None),
+            listed("c/other", Some(0.0001)),
+            listed("d/inconclusive", Some(0.0001)),
+            listed("e/budget", Some(0.0001)),
+        ];
+        let policy = ProbePolicy {
+            only: vec![
+                "a/dear".into(),
+                "b/tokens".into(),
+                "d/inconclusive".into(),
+                "e/budget".into(),
+            ],
+            budget_usd: 0.004,
+            ..policy()
+        };
+        let (new, report) = probe_all(&models, &previous, &policy, &prober)
+            .await
+            .unwrap();
+        let reasons: Vec<&str> = report.kept.iter().map(|(_, why)| why.as_str()).collect();
+        assert_eq!(
+            reasons,
+            ["price", "price", "not selected", "HTTP 503", "budget"]
+        );
+        let prices: Vec<Option<f64>> = new.models.iter().map(|m| m.usd_per_hour).collect();
+        assert_eq!(
+            prices,
+            [
+                Some(0.002 * 3600.0),
+                None,
+                Some(0.0001 * 3600.0),
+                Some(0.0001 * 3600.0),
+                Some(0.0001 * 3600.0)
+            ]
+        );
+        for (new, old) in new.models.iter().zip(&previous.models) {
+            assert_eq!(
+                CompatEntry {
+                    usd_per_hour: old.usd_per_hour,
+                    ..new.clone()
+                },
+                *old
+            );
+        }
+    }
+
+    /// A run where the `failed` first of `compatible` previously compatible
+    /// models came back incompatible, and the others compatible.
+    fn demotions(compatible: usize, failed: usize) -> (CompatList, CompatList, ProbeReport) {
+        let ids: Vec<String> = (0..compatible).map(|i| format!("m/{i}")).collect();
+        let previous = list(
+            ids.iter()
+                .map(|id| entry("openrouter", id, CompatStatus::Compatible))
+                .collect(),
+        );
+        let mut new = previous.clone();
+        for (i, e) in new.models.iter_mut().enumerate() {
+            if i < failed {
+                e.status = if i % 2 == 0 {
+                    CompatStatus::Incompatible
+                } else {
+                    CompatStatus::Unusable
+                };
+            }
+        }
+        let report = ProbeReport {
+            probed: ids,
+            ..Default::default()
+        };
+        (previous, new, report)
+    }
+
+    #[test]
+    fn mass_demotion_leaves_the_list_alone() {
+        let (previous, new, report) = demotions(4, 3);
+        let err = check_demotions(&previous, &new, &report).unwrap_err();
+        assert!(matches!(err, SrttyError::Network(_)), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "3 of 4 compatible models failed this run; compat.json left unchanged"
+        );
+        assert_eq!(err.exit_code(), 2);
+
+        // Half is not more than half.
+        let (previous, new, report) = demotions(4, 2);
+        assert!(check_demotions(&previous, &new, &report).is_ok());
+        // Fewer than 4 conclusive probes of compatible models.
+        let (previous, new, report) = demotions(3, 3);
+        assert!(check_demotions(&previous, &new, &report).is_ok());
+    }
+
+    #[test]
+    fn mass_demotion_counts_only_conclusive_probes_of_compatible_models() {
+        // 5 failures of 6, but one was inconclusive (kept) and one was not
+        // probed: 3 of 4 counted.
+        let (previous, new, mut report) = demotions(6, 5);
+        report.kept.push(("m/0".into(), "HTTP 503".into()));
+        report.probed.retain(|id| id != "m/1");
+        let err = check_demotions(&previous, &new, &report).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "3 of 4 compatible models failed this run; compat.json left unchanged"
+        );
+        // Previously unusable models do not count.
+        let (mut previous, new, report) = demotions(4, 3);
+        previous.models[0].status = CompatStatus::Unusable;
+        assert!(check_demotions(&previous, &new, &report).is_ok());
+    }
+
+    #[test]
+    fn model_line_says_skipped_without_a_previous_entry() {
+        let report = ProbeReport {
+            kept: vec![("m".into(), "price".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            model_line("m", &list(vec![]), &report, None),
+            "m: skipped (price)"
+        );
+        let with_entry = list(vec![entry("openrouter", "m", CompatStatus::Compatible)]);
+        assert_eq!(
+            model_line("m", &with_entry, &report, None),
+            "m: kept (price)"
+        );
+    }
+
+    #[test]
+    fn only_ids_missing_from_the_listing_are_reported() {
+        let models = [listed("a/one", Some(0.0001))];
+        assert_eq!(
+            unlisted_only(&["a/one".into(), "z/gone".into()], &models),
+            ["z/gone: not in the OpenRouter listing"]
+        );
+        assert!(unlisted_only(&[], &models).is_empty());
     }
 }

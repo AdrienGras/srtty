@@ -54,10 +54,7 @@ impl CompatList {
 
     /// `<cache_dir>/compat.json` when it exists and parses, else the embedded list.
     pub fn load(cache_dir: &Path) -> Self {
-        std::fs::read_to_string(cache_dir.join("compat.json"))
-            .ok()
-            .and_then(|text| parse_compat(&text).ok())
-            .unwrap_or_else(Self::embedded)
+        load_with_source(cache_dir).0
     }
 
     pub fn find(&self, provider: &str, model: &str) -> Option<&CompatEntry> {
@@ -170,21 +167,22 @@ async fn fetch_remote(url: &str, timeout: Duration) -> Result<(CompatList, Strin
     Ok((list, body))
 }
 
-/// Downloads `url` and stores it as `<cache_dir>/compat.json`. Any failure
-/// (network, status, parse, cache write) keeps the local copy and yields a warning.
+/// Downloads `url` and stores it as `<cache_dir>/compat.json`. A failed
+/// download (network, status, parse) keeps the local copy and yields a
+/// warning; a failed cache write keeps the download and yields a warning.
 pub async fn refresh(cache_dir: &Path, url: &str, timeout: Duration) -> Refreshed {
     let cause = match fetch_remote(url, timeout).await {
         Ok((list, body)) => {
-            match crate::fsutil::write_atomic(&cache_dir.join("compat.json"), body.as_bytes()) {
-                Ok(()) => {
-                    return Refreshed {
-                        list,
-                        source: CompatSource::Remote,
-                        warning: None,
-                    };
-                }
-                Err(e) => format!("could not write the cache: {e}"),
-            }
+            // A cache that cannot be written does not make the download stale.
+            let warning =
+                crate::fsutil::write_atomic(&cache_dir.join("compat.json"), body.as_bytes())
+                    .err()
+                    .map(|e| format!("could not write the cache: {e}"));
+            return Refreshed {
+                list,
+                source: CompatSource::Remote,
+                warning,
+            };
         }
         Err(e) => e,
     };
@@ -522,11 +520,12 @@ mod tests {
             REFRESH_TIMEOUT,
         )
         .await;
-        assert_eq!(r.source, CompatSource::Embedded);
+        // The downloaded list is used even though it could not be saved.
+        assert_eq!(r.source, CompatSource::Remote);
+        assert_eq!(r.list.generated_at, "2026-11-02");
         let w = r.warning.unwrap();
-        assert!(w.contains("could not refresh"), "{w}");
-        assert!(w.contains("could not write the cache"), "{w}");
-        assert!(w.contains("the embedded copy from"), "{w}");
+        assert!(w.starts_with("could not write the cache: "), "{w}");
+        assert!(!w.contains("could not refresh"), "{w}");
     }
 
     #[test]

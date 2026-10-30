@@ -107,8 +107,24 @@ impl Config {
                 )));
             }
         };
-        toml::from_str(&text)
-            .map_err(|e| SrttyError::Config(format!("invalid config {}: {e}", path.display())))
+        toml::from_str(&text).map_err(|e| {
+            // The default rendering quotes the offending source line, which may
+            // hold a pasted API key: report only the position and the message.
+            let position = e
+                .span()
+                .map(|span| {
+                    let before = text.get(..span.start).unwrap_or(&text);
+                    let line = before.matches('\n').count() + 1;
+                    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+                    format!(" at line {line}, column {column}")
+                })
+                .unwrap_or_default();
+            SrttyError::Config(format!(
+                "invalid config {}{position}: {}",
+                path.display(),
+                e.message()
+            ))
+        })
     }
 }
 
@@ -147,6 +163,15 @@ pub struct Resolved {
     pub jobs: usize,
     pub subtitles: SubtitleConfig,
     pub confirm_above_usd: f64,
+}
+
+/// Whether `name` matches `^[A-Za-z_][A-Za-z0-9_]*$`.
+fn is_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Merge settings. Precedence, lowest to highest: config file, environment
@@ -195,6 +220,11 @@ pub fn resolve(
                     "provider `{provider_name}` has no `api_key_env` in the config file"
                 ))
             })?;
+            if !is_env_var_name(var) {
+                return Err(SrttyError::Config(
+                    "`api_key_env` must be the name of an environment variable (e.g. OPENROUTER_API_KEY), not the key itself".into(),
+                ));
+            }
             let value = env_value(var).ok_or_else(|| {
                 SrttyError::Config(format!("environment variable {var} is not set"))
             })?;
@@ -277,6 +307,44 @@ model = "whisper-large-v3"
         let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
         let err = resolve(cfg, &cli, &env_with(&[])).unwrap_err().to_string();
         assert!(err.contains("OPENROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn key_pasted_into_api_key_env_is_rejected_without_echo() {
+        let cfg: Config = toml::from_str(
+            "default_provider = \"p\"\n[providers.p]\napi_key_env = \"sk-or-v1-0123secret\"\nmodel = \"m\"\n",
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let err = resolve(cfg, &cli, &env_with(&[])).unwrap_err();
+        assert!(matches!(err, SrttyError::Config(_)));
+        let msg = err.to_string();
+        assert!(!msg.contains("0123secret"), "{msg}");
+        assert!(msg.contains("must be the name of an environment variable"));
+    }
+
+    #[test]
+    fn api_key_env_accepts_variable_names_only() {
+        for ok in ["OPENROUTER_API_KEY", "_x", "a1"] {
+            assert!(is_env_var_name(ok), "{ok}");
+        }
+        for bad in ["", "1A", "sk-or-v1-abc", "A B", "É"] {
+            assert!(!is_env_var_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn toml_syntax_error_does_not_echo_the_source_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(
+            &path,
+            "[providers.p]\nmodel = \"m\"\napi_key_env = sk-or-v1-0123secret\n",
+        )
+        .unwrap();
+        let msg = Config::load(&path).unwrap_err().to_string();
+        assert!(!msg.contains("0123secret"), "{msg}");
+        assert!(msg.contains("bad.toml") && msg.contains("line 3"), "{msg}");
     }
 
     #[test]

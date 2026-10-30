@@ -1,5 +1,6 @@
 use crate::assemble::cues::Cue;
 use clap::ValueEnum;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -82,10 +83,18 @@ fn render_srt(cues: &[Cue], speaker_label: &str) -> String {
     out
 }
 
+/// Escapes the characters WebVTT treats as markup in cue text.
+fn escape_vtt(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn render_vtt(cues: &[Cue], speaker_label: &str) -> String {
     if cues.is_empty() {
         return "WEBVTT\n".to_string();
     }
+    let speaker_label = escape_vtt(speaker_label);
     let mut out = String::from("WEBVTT\n\n");
     for cue in cues {
         out.push_str(&format!(
@@ -99,7 +108,7 @@ fn render_vtt(cues: &[Cue], speaker_label: &str) -> String {
             {
                 out.push_str(&format!("<v {speaker_label} {n}>"));
             }
-            out.push_str(line);
+            out.push_str(&escape_vtt(line));
             out.push('\n');
         }
         out.push('\n');
@@ -168,13 +177,26 @@ pub fn output_paths(
 /// Writes `content` to `<path>.srtty-tmp`, then renames it over `path`, so a
 /// failure never leaves a partial output file.
 pub fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+    write_atomic_with(path, |file| file.write_all(content.as_bytes()))
+}
+
+/// Creates `<path>.srtty-tmp`, fills it with `write`, then renames it over
+/// `path`. Once created, the temporary file is removed on any failure.
+fn write_atomic_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let mut tmp_name = path.file_name().unwrap_or_default().to_owned();
     tmp_name.push(".srtty-tmp");
     let tmp = path.with_file_name(tmp_name);
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    let mut file = std::fs::File::create(&tmp)?;
+    let written = write(&mut file);
+    drop(file);
+    written
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
 }
 
 #[cfg(test)]
@@ -219,6 +241,19 @@ mod tests {
         assert_eq!(
             s,
             "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<v Speaker 1>Hi\n\n00:00:01.000 --> 00:00:02.000\n<v Speaker 1>Yo\n\n"
+        );
+    }
+
+    #[test]
+    fn vtt_escapes_markup_in_text_and_voice_label() {
+        let s = render(
+            Format::Vtt,
+            &[cue(0.0, 1.0, &["R&D <3 --> ok", "a>b"], Some(1))],
+            "Q&A <x>",
+        );
+        assert_eq!(
+            s,
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<v Q&amp;A &lt;x&gt; 1>R&amp;D &lt;3 --&gt; ok\na&gt;b\n\n"
         );
     }
 
@@ -314,6 +349,27 @@ mod tests {
         write_atomic(&f, "x").unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "x");
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn atomic_write_cleans_temp_file_when_write_fails() {
+        let d = tempfile::tempdir().unwrap();
+        let err = write_atomic_with(&d.path().join("a.srt"), |f| {
+            f.write_all(b"partial")?;
+            Err(std::io::Error::other("disk full"))
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "disk full");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn atomic_write_keeps_a_foreign_directory_in_the_temp_name() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("a.srt.srtty-tmp")).unwrap();
+        assert!(write_atomic(&d.path().join("a.srt"), "x").is_err());
+        assert!(d.path().join("a.srt.srtty-tmp").is_dir());
+        assert!(!d.path().join("a.srt").exists());
     }
 
     #[test]

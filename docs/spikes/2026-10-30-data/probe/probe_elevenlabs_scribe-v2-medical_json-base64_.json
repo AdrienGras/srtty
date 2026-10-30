@@ -1,0 +1,597 @@
+{
+ "text": "C'est qu'il avait déjà épousé plusieurs femmes et qu'on ne savait ce que ces femmes étaient devenues. La Barbe bleue, pour faire connaissance, les mena avec leur mère et trois ou quatre de leurs meilleures amies et quelques jeunes gens du voisinage à une de ses maisons de campagne où on demeura huit jours entiers. Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations. On ne dormait point et on passait toute la nuit à se faire des malices les uns les autres. Enfin, tout alla si bien",
+ "usage": {
+  "seconds": 30,
+  "cost": 0.001833333333333
+ },
+ "task": "transcribe",
+ "language": "fra",
+ "language_confidence": 1,
+ "duration": 30,
+ "segments": [
+  {
+   "id": 0,
+   "start": 0,
+   "end": 30,
+   "text": "C'est qu'il avait déjà épousé plusieurs femmes et qu'on ne savait ce que ces femmes étaient devenues. La Barbe bleue, pour faire connaissance, les mena avec leur mère et trois ou quatre de leurs meilleures amies et quelques jeunes gens du voisinage à une de ses maisons de campagne où on demeura huit jours entiers. Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations. On ne dormait point et on passait toute la nuit à se faire des malices les uns les autres. Enfin, tout alla si bien"
+  }
+ ],
+ "words": [
+  {
+   "word": "C'est",
+   "start": 0.32,
+   "end": 0.4,
+   "confidence": 0.9903266963293815
+  },
+  {
+   "word": "qu'il",
+   "start": 0.42,
+   "end": 0.52,
+   "confidence": 0.9999988555931122
+  },
+  {
+   "word": "avait",
+   "start": 0.58,
+   "end": 0.72,
+   "confidence": 0.9999936819476216
+  },
+  {
+   "word": "déjà",
+   "start": 0.76,
+   "end": 0.98,
+   "confidence": 0.9999997615814777
+  },
+  {
+   "word": "épousé",
+   "start": 1.04,
+   "end": 1.38,
+   "confidence": 0.9996553178703016
+  },
+  {
+   "word": "plusieurs",
+   "start": 1.42,
+   "end": 1.72,
+   "confidence": 1
+  },
+  {
+   "word": "femmes",
+   "start": 1.8,
+   "end": 2.06,
+   "confidence": 0.9999991655356624
+  },
+  {
+   "word": "et",
+   "start": 2.58,
+   "end": 2.64,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "qu'on",
+   "start": 2.66,
+   "end": 2.76,
+   "confidence": 0.9999996185306219
+  },
+  {
+   "word": "ne",
+   "start": 2.78,
+   "end": 2.86,
+   "confidence": 0.9770218505726789
+  },
+  {
+   "word": "savait",
+   "start": 2.96,
+   "end": 3.24,
+   "confidence": 0.9998767527862662
+  },
+  {
+   "word": "ce",
+   "start": 3.3,
+   "end": 3.38,
+   "confidence": 1
+  },
+  {
+   "word": "que",
+   "start": 3.42,
+   "end": 3.5,
+   "confidence": 1
+  },
+  {
+   "word": "ces",
+   "start": 3.54,
+   "end": 3.66,
+   "confidence": 0.9997384040577275
+  },
+  {
+   "word": "femmes",
+   "start": 3.72,
+   "end": 3.96,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "étaient",
+   "start": 4.019,
+   "end": 4.18,
+   "confidence": 0.9999905825550351
+  },
+  {
+   "word": "devenues.",
+   "start": 4.22,
+   "end": 4.66,
+   "confidence": 0.9998221040838022
+  },
+  {
+   "word": "La",
+   "start": 5.76,
+   "end": 5.84,
+   "confidence": 0.9999771123402672
+  },
+  {
+   "word": "Barbe",
+   "start": 5.88,
+   "end": 6.12,
+   "confidence": 0.9857741290811143
+  },
+  {
+   "word": "bleue,",
+   "start": 6.2,
+   "end": 6.34,
+   "confidence": 0.7530240393004746
+  },
+  {
+   "word": "pour",
+   "start": 6.46,
+   "end": 6.58,
+   "confidence": 0.9999996423722521
+  },
+  {
+   "word": "faire",
+   "start": 6.62,
+   "end": 6.8,
+   "confidence": 0.9999996423722521
+  },
+  {
+   "word": "connaissance,",
+   "start": 6.82,
+   "end": 7.34,
+   "confidence": 0.9999612126749572
+  },
+  {
+   "word": "les",
+   "start": 7.7,
+   "end": 7.76,
+   "confidence": 0.9999995231630692
+  },
+  {
+   "word": "mena",
+   "start": 7.8,
+   "end": 8,
+   "confidence": 0.9989008115430853
+  },
+  {
+   "word": "avec",
+   "start": 8.06,
+   "end": 8.24,
+   "confidence": 1
+  },
+  {
+   "word": "leur",
+   "start": 8.28,
+   "end": 8.4,
+   "confidence": 0.9995121952477934
+  },
+  {
+   "word": "mère",
+   "start": 8.5,
+   "end": 8.74,
+   "confidence": 0.9999893904859
+  },
+  {
+   "word": "et",
+   "start": 9.06,
+   "end": 9.14,
+   "confidence": 1
+  },
+  {
+   "word": "trois",
+   "start": 9.2,
+   "end": 9.46,
+   "confidence": 0.9999865295319578
+  },
+  {
+   "word": "ou",
+   "start": 9.5,
+   "end": 9.62,
+   "confidence": 0.9999996423722521
+  },
+  {
+   "word": "quatre",
+   "start": 9.66,
+   "end": 9.94,
+   "confidence": 0.9999876023871354
+  },
+  {
+   "word": "de",
+   "start": 10.06,
+   "end": 10.12,
+   "confidence": 1
+  },
+  {
+   "word": "leurs",
+   "start": 10.16,
+   "end": 10.3,
+   "confidence": 0.9999957084838798
+  },
+  {
+   "word": "meilleures",
+   "start": 10.34,
+   "end": 10.6,
+   "confidence": 0.705714840740353
+  },
+  {
+   "word": "amies",
+   "start": 10.66,
+   "end": 10.86,
+   "confidence": 0.9998799334779939
+  },
+  {
+   "word": "et",
+   "start": 11.24,
+   "end": 11.3,
+   "confidence": 1
+  },
+  {
+   "word": "quelques",
+   "start": 11.34,
+   "end": 11.6,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "jeunes",
+   "start": 11.64,
+   "end": 11.82,
+   "confidence": 0.9999935627400018
+  },
+  {
+   "word": "gens",
+   "start": 11.84,
+   "end": 11.98,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "du",
+   "start": 12.02,
+   "end": 12.1,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "voisinage",
+   "start": 12.12,
+   "end": 12.66,
+   "confidence": 0.9997693832217586
+  },
+  {
+   "word": "à",
+   "start": 13.06,
+   "end": 13.14,
+   "confidence": 0.9999980926550052
+  },
+  {
+   "word": "une",
+   "start": 13.2,
+   "end": 13.28,
+   "confidence": 0.9999997615814777
+  },
+  {
+   "word": "de",
+   "start": 13.32,
+   "end": 13.4,
+   "confidence": 1
+  },
+  {
+   "word": "ses",
+   "start": 13.44,
+   "end": 13.52,
+   "confidence": 0.9980727693729643
+  },
+  {
+   "word": "maisons",
+   "start": 13.56,
+   "end": 13.8,
+   "confidence": 0.9999958276922101
+  },
+  {
+   "word": "de",
+   "start": 13.82,
+   "end": 13.9,
+   "confidence": 1
+  },
+  {
+   "word": "campagne",
+   "start": 13.94,
+   "end": 14.46,
+   "confidence": 0.999993205116773
+  },
+  {
+   "word": "où",
+   "start": 14.86,
+   "end": 14.9,
+   "confidence": 0.9999972581939645
+  },
+  {
+   "word": "on",
+   "start": 14.92,
+   "end": 15,
+   "confidence": 0.9995649562176118
+  },
+  {
+   "word": "demeura",
+   "start": 15.04,
+   "end": 15.48,
+   "confidence": 0.9991108886709364
+  },
+  {
+   "word": "huit",
+   "start": 15.5,
+   "end": 15.78,
+   "confidence": 0.9999759203026506
+  },
+  {
+   "word": "jours",
+   "start": 15.84,
+   "end": 16.14,
+   "confidence": 0.9999983310727032
+  },
+  {
+   "word": "entiers.",
+   "start": 16.2,
+   "end": 16.62,
+   "confidence": 0.9999829087983849
+  },
+  {
+   "word": "Ce",
+   "start": 17.56,
+   "end": 17.62,
+   "confidence": 0.9999979734461775
+  },
+  {
+   "word": "n'était",
+   "start": 17.66,
+   "end": 17.86,
+   "confidence": 0.9957092044623131
+  },
+  {
+   "word": "que",
+   "start": 17.9,
+   "end": 18.04,
+   "confidence": 1
+  },
+  {
+   "word": "promenades,",
+   "start": 18.08,
+   "end": 18.74,
+   "confidence": 0.962474233503977
+  },
+  {
+   "word": "que",
+   "start": 18.82,
+   "end": 18.96,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "parties",
+   "start": 19.02,
+   "end": 19.32,
+   "confidence": 0.999652268243557
+  },
+  {
+   "word": "de",
+   "start": 19.36,
+   "end": 19.46,
+   "confidence": 1
+  },
+  {
+   "word": "chasse",
+   "start": 19.5,
+   "end": 19.74,
+   "confidence": 0.9999980926550052
+  },
+  {
+   "word": "et",
+   "start": 19.76,
+   "end": 19.82,
+   "confidence": 1
+  },
+  {
+   "word": "de",
+   "start": 19.84,
+   "end": 19.9,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "pêche,",
+   "start": 20.02,
+   "end": 20.26,
+   "confidence": 0.9999994436902884
+  },
+  {
+   "word": "que",
+   "start": 20.72,
+   "end": 20.78,
+   "confidence": 0.9999997615814777
+  },
+  {
+   "word": "danses",
+   "start": 20.92,
+   "end": 21.36,
+   "confidence": 0.9996931141061894
+  },
+  {
+   "word": "et",
+   "start": 21.38,
+   "end": 21.48,
+   "confidence": 1
+  },
+  {
+   "word": "festins,",
+   "start": 21.56,
+   "end": 21.98,
+   "confidence": 0.9997940243833291
+  },
+  {
+   "word": "que",
+   "start": 22.32,
+   "end": 22.38,
+   "confidence": 0.9999998807907247
+  },
+  {
+   "word": "collations.",
+   "start": 22.48,
+   "end": 23.04,
+   "confidence": 0.9999128058368631
+  },
+  {
+   "word": "On",
+   "start": 23.38,
+   "end": 23.44,
+   "confidence": 0.9999995231630692
+  },
+  {
+   "word": "ne",
+   "start": 23.46,
+   "end": 23.52,
+   "confidence": 0.9999997615814777
+  },
+  {
+   "word": "dormait",
+   "start": 23.58,
+   "end": 23.94,
+   "confidence": 0.9999895437905433
+  },
+  {
+   "word": "point",
+   "start": 23.98,
+   "end": 24.16,
+   "confidence": 0.9999928474936721
+  },
+  {
+   "word": "et",
+   "start": 24.54,
+   "end": 24.58,
+   "confidence": 1
+  },
+  {
+   "word": "on",
+   "start": 24.62,
+   "end": 24.7,
+   "confidence": 0.9999895096921129
+  },
+  {
+   "word": "passait",
+   "start": 24.74,
+   "end": 25.1,
+   "confidence": 0.9999873470047446
+  },
+  {
+   "word": "toute",
+   "start": 25.12,
+   "end": 25.32,
+   "confidence": 0.9999990463265931
+  },
+  {
+   "word": "la",
+   "start": 25.38,
+   "end": 25.5,
+   "confidence": 0.9999995231630692
+  },
+  {
+   "word": "nuit",
+   "start": 25.54,
+   "end": 25.8,
+   "confidence": 0.9999930859092101
+  },
+  {
+   "word": "à",
+   "start": 25.84,
+   "end": 25.88,
+   "confidence": 0.9999994039539004
+  },
+  {
+   "word": "se",
+   "start": 25.94,
+   "end": 26.04,
+   "confidence": 0.9999997615814777
+  },
+  {
+   "word": "faire",
+   "start": 26.08,
+   "end": 26.22,
+   "confidence": 0.9999985694905718
+  },
+  {
+   "word": "des",
+   "start": 26.26,
+   "end": 26.36,
+   "confidence": 1
+  },
+  {
+   "word": "malices",
+   "start": 26.4,
+   "end": 26.74,
+   "confidence": 0.9993386852562
+  },
+  {
+   "word": "les",
+   "start": 26.8,
+   "end": 26.94,
+   "confidence": 1
+  },
+  {
+   "word": "uns",
+   "start": 26.96,
+   "end": 27.06,
+   "confidence": 0.9999940395710211
+  },
+  {
+   "word": "les",
+   "start": 27.1,
+   "end": 27.24,
+   "confidence": 0.9999980926550052
+  },
+  {
+   "word": "autres.",
+   "start": 27.32,
+   "end": 27.58,
+   "confidence": 0.9999647664810477
+  },
+  {
+   "word": "Enfin,",
+   "start": 28.44,
+   "end": 28.62,
+   "confidence": 0.9896773832160142
+  },
+  {
+   "word": "tout",
+   "start": 29.08,
+   "end": 29.22,
+   "confidence": 0.999977350747961
+  },
+  {
+   "word": "alla",
+   "start": 29.26,
+   "end": 29.46,
+   "confidence": 0.9920673476476275
+  },
+  {
+   "word": "si",
+   "start": 29.52,
+   "end": 29.62,
+   "confidence": 1
+  },
+  {
+   "word": "bien",
+   "start": 29.68,
+   "end": 29.86,
+   "confidence": 0.9999983310727032
+  }
+ ]
+}

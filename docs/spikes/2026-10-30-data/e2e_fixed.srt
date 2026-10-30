@@ -1,0 +1,616 @@
+1
+00:00:03,120 --> 00:00:04,400
+La barbe bleue,
+
+2
+00:00:04,560 --> 00:00:07,120
+ceci est un enregistrement Librivox.
+
+3
+00:00:07,280 --> 00:00:10,080
+Tous nos enregistrements appartiennent au domaine public.
+
+4
+00:00:10,400 --> 00:00:12,880
+Pour vous renseigner à notre sujet ou pour participer,
+
+5
+00:00:13,145 --> 00:00:15,945
+rendez-vous sur librivox point o r g,
+
+6
+00:00:16,345 --> 00:00:17,945
+enregistré par Ezois,
+
+7
+00:00:18,105 --> 00:00:21,465
+conte du temps passé avec des moralités de Charles Perrot,
+
+8
+00:00:21,785 --> 00:00:23,545
+la barbe bleue, conte.
+
+9
+00:00:24,825 --> 00:00:33,430
+Il était une fois un homme qui avait de belles maisons à la ville et à la campagne, de la vaisselle d'or et d'argent, des meubles en broderie et des carrosses tout dorés.
+
+10
+00:00:33,750 --> 00:00:36,550
+Mais par malheur, cet homme avait la barbe bleue.
+
+11
+00:00:37,030 --> 00:00:39,350
+Cela le rendait si laid et si terrible
+
+12
+00:00:39,430 --> 00:00:42,310
+qu'il n'était ni femme ni fille qui ne s'enfuient devant lui.
+
+13
+00:00:43,135 --> 00:00:47,535
+Une de ses voisines, dame de qualité, avait deux filles parfaitement belles.
+
+14
+00:00:47,695 --> 00:00:51,615
+Il lui en demanda une en mariage en lui laissant le choix de celles qu'elle voudrait lui donner.
+
+15
+00:00:51,935 --> 00:00:57,775
+Elle n'en voulait point toutes deux et se le renvoyèrent l'une à l'autre, pouvant se résoudre à prendre un homme qui eut la barbe bleue.
+
+16
+00:00:58,340 --> 00:01:00,020
+Ce qui les dégoûtait encore,
+
+17
+00:01:00,180 --> 00:01:04,900
+c'est qu'il avait déjà épousé plusieurs femmes et qu'on le savait ce que ces femmes étaient devenues.
+
+18
+00:01:05,620 --> 00:01:16,845
+La barbe bleue, pour faire connaissance, les mena avec leur mère et trois ou quatre de leurs meilleurs amis et quelques jeunes gens du voisinage à une de ces maisons de campagne où on demeura huit jours entiers.
+
+19
+00:01:17,405 --> 00:01:27,565
+Ce n'était que promenade, que partie de chasse et de pêche, que danses et festins, que collations, on ne dormait point et on passait toute la nuit à se faire des malices les uns les autres.
+
+20
+00:01:28,220 --> 00:01:28,940
+Enfin,
+
+21
+00:01:29,020 --> 00:01:36,460
+tout alla si bien que la cadette commença à trouver que le maître du logis n'avait plus la barbe si bleue et que c'était un fort honnête homme.
+
+22
+00:01:37,100 --> 00:01:40,060
+Dès qu'on fut de retour à la ville, le mariage se conclut.
+
+23
+00:01:40,965 --> 00:01:48,885
+Au bout d'un mois, la barbe bleue dit à sa femme qu'il était obligé de faire un voyage en province de six semaines au moins pour une affaire de conséquence,
+
+24
+00:01:49,125 --> 00:01:57,550
+qu'il la priait de se bien divertir pendant son absence, qu'elle fit venir ses bonnes amies, qu'elle les mena à la campagne si elle voulait, que partout elle fit bonne chair.
+
+25
+00:01:58,430 --> 00:01:59,230
+Voilà,
+
+26
+00:01:59,390 --> 00:02:02,350
+lui dit-il, les clés de deux grandes garde-robes,
+
+27
+00:02:02,430 --> 00:02:06,190
+voilà celle de la vaisselle d'or et d'argent qui ne sert pas tous les jours,
+
+28
+00:02:06,510 --> 00:02:09,470
+voilà celle de mes coffres-forts où est mon or et mon argent,
+
+29
+00:02:10,075 --> 00:02:12,155
+celle des cassettes où sont mes pierreries
+
+30
+00:02:12,235 --> 00:02:15,275
+et voilà le passe-partout de tous les appartements.
+
+31
+00:02:15,995 --> 00:02:17,595
+Pour cette petite clé-ci,
+
+32
+00:02:17,835 --> 00:02:21,355
+c'est la clé du cabinet au bout de la grande galerie de l'appartement bas.
+
+33
+00:02:21,595 --> 00:02:23,800
+Ouvrez tout, allez partout,
+
+34
+00:02:24,040 --> 00:02:26,040
+mais pour ce petit cabinet,
+
+35
+00:02:26,120 --> 00:02:31,720
+je vous défends d'y entrer et je vous le défends de telle sorte que s'il vous arrive de l'ouvrir,
+
+36
+00:02:31,880 --> 00:02:34,280
+il n'y a rien que vous ne deviez attendre de ma colère.
+
+37
+00:02:35,425 --> 00:02:39,345
+Elle promit d'observer exactement tout ce qui lui venait d'être ordonné.
+
+38
+00:02:39,585 --> 00:02:41,345
+Et lui, après l'avoir embrassé,
+
+39
+00:02:41,345 --> 00:02:43,985
+il monte dans son carrosse et part pour son voyage.
+
+40
+00:02:44,785 --> 00:02:57,640
+Les voisines et les bonnes habits n'attendirent pas qu'on les envoie acquérir pour aller chez la jeune mariée, tant elles avaient d'impatience de voir toutes les richesses de sa maison, n'ayant osé y venir pendant que le mari y était à cause de sa barbe bleue qui leur faisait peur.
+
+41
+00:02:58,200 --> 00:02:59,960
+Et voilà aussitôt à parcourir
+
+42
+00:03:00,000 --> 00:03:02,800
+Les chambres, les cabinets, les garde-robes,
+
+43
+00:03:03,040 --> 00:03:05,760
+toutes plus belles et plus riches les unes que les autres.
+
+44
+00:03:06,240 --> 00:03:12,080
+Elles montèrent ensuite au garde-meuble, où elles ne pouvaient assez admirer le nombre et la beauté des tapisseries,
+
+45
+00:03:12,080 --> 00:03:26,065
+des lits, des sofas, des cabinets, des guéridons, des tables et des miroirs, où l'on se voyait depuis le pied jusqu'à la tête, et dont les bordures, les unes de glace, les autres d'argent et de vermeil doré, étaient les plus belles et les plus magnifiques qu'on n'eût jamais vues.
+
+46
+00:03:26,870 --> 00:03:37,430
+Elle ne cessait d'exagérer et d'envier le bonheur de leur amie, qui cependant ne se divertissait point à avoir toutes ses richesses à cause de l'impatience qu'elle avait d'aller ouvrir le cabinet de l'appartement bas.
+
+47
+00:03:38,070 --> 00:03:39,990
+Elle fut si pressée de sa curiosité
+
+48
+00:03:40,425 --> 00:03:48,025
+que sans considérer qu'il était malhonnête de quitter sa compagnie, elle descendit par un escalier dérobé et avait tant de précipitation
+
+49
+00:03:48,025 --> 00:03:50,745
+qu'elle pensa se rompre le coup deux ou trois fois.
+
+50
+00:03:51,385 --> 00:03:53,545
+Étant arrivée à la porte du cabinet,
+
+51
+00:03:53,705 --> 00:03:55,065
+elle s'y arrêta quelque temps,
+
+52
+00:03:55,660 --> 00:04:02,140
+songeant à la défense que son mari lui avait faite et considérant qu'il pourrait lui arriver malheur d'avoir été désobéissante.
+
+53
+00:04:02,780 --> 00:04:06,700
+Mais la tentation était si forte qu'elle ne put la surmonter.
+
+54
+00:04:07,020 --> 00:04:08,620
+Elle prit donc la petite clé
+
+55
+00:04:08,975 --> 00:04:12,095
+et ouvrit en tremblant la porte du cabinet.
+
+56
+00:04:12,575 --> 00:04:13,295
+D'abord,
+
+57
+00:04:13,455 --> 00:04:14,655
+elle ne vit rien,
+
+58
+00:04:14,895 --> 00:04:16,575
+parce que les fenêtres étaient fermées.
+
+59
+00:04:17,215 --> 00:04:26,310
+Après quelques moments, elle commença à voir que le plancher était tout couvert de sang-cahier, dans lequel se miraient les corps de plusieurs femmes mortes et attachées le long des murs.
+
+60
+00:04:27,030 --> 00:04:31,670
+C'étaient toutes les femmes que la barbe bleue avait épousées et qu'il avait égorgé l'une après l'autre.
+
+61
+00:04:32,070 --> 00:04:48,295
+Elle pensa mourir de peur et la clé du cabinet qu'elle venait de retirer de la serrure lui tomba de la main. Après avoir un peu repris ses esprits, elle ramassa la clé, referma la porte et monta à sa chambre pour se remettre un peu, mais elle en pouvait venir à bout tant elle était émue.
+
+62
+00:04:49,190 --> 00:05:02,070
+Ayant remarqué que la clé du cabinet était tachée de sang, elle l'essuya deux ou trois fois, mais le sang ne s'en allait point, elle eut beau la laver et même la frotter avec du sable et avec du grès, il y demeura toujours du sang,
+
+63
+00:05:02,390 --> 00:05:10,225
+car la clé était fait et il n'y avait pas moyen de la nettoyer tout à fait. Quand on ôtait le sang d'un côté, il revenait de l'autre.
+
+64
+00:05:10,785 --> 00:05:21,190
+La barbe bleue revint de son voyage dès le soir même, et dit qu'il avait reçu des lettres dans le chemin, lui avait appris que l'affaire pour laquelle il était parti venait d'être terminée à son avantage.
+
+65
+00:05:21,910 --> 00:05:26,550
+Sa femme fit tout ce qu'elle put pour lui témoigner qu'elle était ravie de son prompt retour.
+
+66
+00:05:27,510 --> 00:05:28,550
+Le lendemain,
+
+67
+00:05:28,710 --> 00:05:33,545
+il lui redemanda les clés et elle les lui donna, mais d'une main si tremblante
+
+68
+00:05:33,545 --> 00:05:36,585
+qu'il devina sans peine tout ce qui s'était passé.
+
+69
+00:05:37,465 --> 00:05:42,185
+D'où vient, lui dit-il, que la clé du cabinet n'est point avec les autres.
+
+70
+00:05:43,065 --> 00:05:46,770
+Il faut, dit-elle, que je l'ai laissé là-haut sur ma table.
+
+71
+00:05:47,650 --> 00:05:51,570
+Ne manquez pas, dit la barbe bleue, de me la donner tantôt.
+
+72
+00:05:52,610 --> 00:05:54,050
+Après plusieurs remises,
+
+73
+00:05:54,050 --> 00:05:55,570
+il fallut apporter la clé.
+
+74
+00:05:55,810 --> 00:05:58,450
+La barbe bleue l'ayant considérée, dit à sa femme,
+
+75
+00:05:59,010 --> 00:06:00,690
+pourquoi y a-t-il du
+
+76
+00:06:00,000 --> 00:06:01,200
+Sur cette clé.
+
+77
+00:06:02,000 --> 00:06:06,240
+Je n'en sais rien, répondit la pauvre femme, plus pâle que la mort.
+
+78
+00:06:06,560 --> 00:06:08,000
+Vous n'en savez rien,
+
+79
+00:06:08,400 --> 00:06:09,840
+reprit la barbe bleue.
+
+80
+00:06:10,000 --> 00:06:13,440
+Je le sais bien moi. Vous avez voulu entrer dans le cabinet?
+
+81
+00:06:15,035 --> 00:06:20,235
+Bien madame, vous y entrerez et irez prendre votre place auprès des dames que vous y avez vues.
+
+82
+00:06:20,955 --> 00:06:28,475
+Elle se jeta aux pieds de son mari en pleurante et en lui demandant pardon avec toutes les marques d'un vrai repentir de n'avoir pas été obéissante.
+
+83
+00:06:28,980 --> 00:06:30,900
+Elle aurait attendri un rocher,
+
+84
+00:06:31,060 --> 00:06:32,980
+belle et affligée comme elle était,
+
+85
+00:06:33,540 --> 00:06:36,500
+mais la barbe bleue avait un coeur plus dur qu'un rocher.
+
+86
+00:06:37,140 --> 00:06:40,580
+Il faut mourir, madame, lui dit-il, et tout à l'heure.
+
+87
+00:06:41,965 --> 00:06:44,205
+Puisqu'il faut mourir, répondit-elle
+
+88
+00:06:44,205 --> 00:06:46,525
+en le regardant les yeux baignés de larmes.
+
+89
+00:06:46,845 --> 00:06:49,085
+Donnez-moi un peu de temps pour prier Dieu.
+
+90
+00:06:50,125 --> 00:06:55,210
+Je vous donne un demi-quart d'heure, reprit la barbe bleue, mais pas un moment davantage.
+
+91
+00:06:56,250 --> 00:06:59,610
+Lorsqu'elle fut seule, elle appela sa soeur et lui dit,
+
+92
+00:07:00,010 --> 00:07:01,050
+ma soeur Anne,
+
+93
+00:07:01,450 --> 00:07:02,890
+car elle s'appelait ainsi,
+
+94
+00:07:03,210 --> 00:07:09,595
+monte, je te prie sur le haut de la tour pour voir si mes frères ne viennent point. Ils m'ont promis qu'ils me viendraient voir aujourd'hui,
+
+95
+00:07:09,755 --> 00:07:12,475
+et si tu les vois, fais leur signe de se hâter.
+
+96
+00:07:13,115 --> 00:07:19,675
+La soeur Anne monta sur le haut de la tour, et la pauvre affligée lui criait de temps en temps, Anne,
+
+97
+00:07:19,755 --> 00:07:22,300
+ma soeur Anne, ne vois-tu rien venir?
+
+98
+00:07:22,780 --> 00:07:24,540
+Et la soeur Anne lui répondit,
+
+99
+00:07:24,700 --> 00:07:28,380
+je ne vois rien que le soleil qui poudroie et l'herbe qui verdoie.
+
+100
+00:07:28,860 --> 00:07:29,580
+Cependant,
+
+101
+00:07:29,820 --> 00:07:34,620
+la barbe bleue tenant un grand coutelas à sa main, criait de toute sa force à sa femme,
+
+102
+00:07:35,100 --> 00:07:36,620
+descends vite
+
+103
+00:07:36,775 --> 00:07:38,375
+ou je monterai là-haut.
+
+104
+00:07:39,655 --> 00:07:45,575
+Encore un moment s'il vous plaît, lui répondit sa femme. Et aussitôt elle criait tout bas, Anne,
+
+105
+00:07:45,735 --> 00:07:46,935
+ma soeur Anne,
+
+106
+00:07:47,255 --> 00:07:48,695
+ne vois-tu rien venir?
+
+107
+00:07:49,015 --> 00:07:50,295
+Et la soeur Anne répondait,
+
+108
+00:07:50,810 --> 00:07:54,330
+je ne vois rien que le soleil qui poudroie et l'herbe qui verdoie.
+
+109
+00:07:55,210 --> 00:07:56,730
+Descends donc vite,
+
+110
+00:07:57,050 --> 00:07:59,690
+criait la barbe bleue, ou je montrais là-haut.
+
+111
+00:08:00,410 --> 00:08:03,610
+Je m'en vais, répondit la femme. Et puis elle criait,
+
+112
+00:08:04,125 --> 00:08:07,405
+Anne, ma soeur Anne, ne vois-tu rien venir?
+
+113
+00:08:08,125 --> 00:08:12,445
+Je vois, répondit la soeur Anne, une grosse poussière qui vient de ce côté-ci.
+
+114
+00:08:12,845 --> 00:08:14,045
+Sont-ce mes frères?
+
+115
+00:08:14,285 --> 00:08:17,325
+Hélas, non, ma soeur, je vois un troupeau de moutons.
+
+116
+00:08:18,570 --> 00:08:20,250
+Ne veux-tu pas descendre?
+
+117
+00:08:20,250 --> 00:08:21,690
+Criait la barbe bleue.
+
+118
+00:08:22,010 --> 00:08:26,090
+Encore un petit moment, répondit sa femme. Et puis elle criait,
+
+119
+00:08:26,170 --> 00:08:29,290
+Anne, ma soeur Anne, ne vois-tu rien venir?
+
+120
+00:08:29,930 --> 00:08:31,690
+Je vois, répondit-elle,
+
+121
+00:08:31,770 --> 00:08:35,795
+deux cavaliers qui viennent de ce côté, mais ils sont bien loin encore.
+
+122
+00:08:36,195 --> 00:08:39,795
+Dieu soit loué, s'écria-t-elle un moment après, ce sont mes frères,
+
+123
+00:08:40,035 --> 00:08:42,595
+je leur fais signe tant que je puis de se hâter.
+
+124
+00:08:43,395 --> 00:08:47,555
+La barbe bleue se mit à crier si fort que toute la maison en trembla.
+
+125
+00:08:48,150 --> 00:08:50,070
+La pauvre femme descendit
+
+126
+00:08:50,070 --> 00:08:53,510
+et alla se jeter à ses pieds tout éploré et tout échevelé.
+
+127
+00:08:53,670 --> 00:08:55,270
+Cela ne sert de rien,
+
+128
+00:08:55,590 --> 00:08:58,070
+dit la barbe bleue. Il faut mourir.
+
+129
+00:08:58,630 --> 00:09:00,070
+Puis, la prenant d'une
+
+130
+00:09:00,000 --> 00:09:05,280
+Par les cheveux et de l'autre levant le coutelas en l'air, il allait lui abattre la tête.
+
+131
+00:09:05,680 --> 00:09:09,920
+La pauvre femme se tournant vers lui et le regardant avec des yeux mourants,
+
+132
+00:09:10,160 --> 00:09:12,720
+le pria de lui donner un petit moment pour se recueillir.
+
+133
+00:09:13,615 --> 00:09:15,775
+Non, non, dit-il,
+
+134
+00:09:15,935 --> 00:09:17,535
+recommande-toi bien à Dieu.
+
+135
+00:09:18,015 --> 00:09:19,295
+Et levant son bras,
+
+136
+00:09:19,935 --> 00:09:31,260
+dans ce moment, on heurta si fort à la porte que la barbe bleue s'arrêta tout court. On l'ouvrit et aussitôt on vit entrer deux cavaliers qui mettant l'épée à la main, coururent droit à la barbe bleue.
+
+137
+00:09:31,580 --> 00:09:35,980
+Il reconnut que c'étaient les frères de sa femme, l'un dragon et l'autre mousquetaire,
+
+138
+00:09:35,980 --> 00:09:38,540
+de sorte qu'il s'enfuit aussitôt pour se sauver.
+
+139
+00:09:38,860 --> 00:09:43,585
+Mais les deux frères le poursuivirent de si près qu'ils l'attrapèrent avant qu'il pût gagner le perron.
+
+140
+00:09:43,745 --> 00:09:47,345
+Ils lui passèrent leur épée au travers du corps et le laissèrent mort.
+
+141
+00:09:47,825 --> 00:09:54,065
+La pauvre femme était presque aussi morte que son mari et n'avait pas la force de se lever pour embrasser ses frères.
+
+142
+00:09:55,430 --> 00:09:58,150
+Il se trouva que la barbe bleue n'avait point d'héritier,
+
+143
+00:09:58,230 --> 00:10:10,985
+et qu'ainsi sa femme demeura maîtresse de tous ses biens. Elle en employa une partie à marier sa soeur Anne avec un jeune gentilhomme dont elle était aimée depuis longtemps, une autre partie à acheter des charges de capitaine à ses deux frères,
+
+144
+00:10:11,225 --> 00:10:18,185
+et le reste à se marier elle-même à un fort honnête homme qui lui fit oublier le mauvais temps qu'elle avait passé avec la barbe bleue.
+
+145
+00:10:18,585 --> 00:10:19,305
+Moralité,
+
+146
+00:10:20,150 --> 00:10:26,790
+la curiosité malgré tous ses attraits coûte souvent bien des regrets. On en voit tous les jours mille exemples paraître.
+
+147
+00:10:27,110 --> 00:10:34,150
+C'est, n'en déplaise au sexe, un plaisir bien léger. Dès qu'on le prend, il cesse d'être et toujours il coûte trop cher.
+
+148
+00:10:35,115 --> 00:10:36,475
+Autre moralité,
+
+149
+00:10:36,955 --> 00:10:41,115
+pour peu qu'on ait l'esprit sensé et que du monde on sache le grimoire,
+
+150
+00:10:41,195 --> 00:10:44,635
+on voit bientôt que cette histoire est un conte du temps passé.
+
+151
+00:10:45,115 --> 00:10:46,955
+Il n'est plus d'époux si terrible,
+
+152
+00:10:47,035 --> 00:10:47,995
+ni qui demande l'impossible,
+
+153
+00:10:48,540 --> 00:10:57,020
+Fut-il mal content et jaloux près de sa femme, le voit filer doux, et de quelques couleurs que sa barbe puisse être, on a peine à juger qui des deux est le maître.
+
+154
+00:10:58,060 --> 00:10:59,420
+Fin de la barbe bleue.
+

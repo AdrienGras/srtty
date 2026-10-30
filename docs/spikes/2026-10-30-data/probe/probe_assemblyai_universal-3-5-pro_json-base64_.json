@@ -1,0 +1,19 @@
+{
+ "text": "c'est qu'il avait déjà épousé plusieurs femmes, et qu'on ne savait ce que ces femmes étaient devenues. La Barbe-Bleue, pour faire connaissance, les mena avec leur mère, et 3 ou 4 de leurs meilleurs amis, et quelques jeunes gens du voisinage, à une de ses maisons de campagne, où on demeura 8 jours entiers. Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations ; on ne dormait point, et on passait toute la nuit à se faire des malices les uns les autres. Enfin, tout alla si bien,",
+ "usage": {
+  "seconds": 30,
+  "cost": 0.002499999
+ },
+ "task": "transcribe",
+ "duration": 30,
+ "confidence": 0.9854806986114686,
+ "segments": [
+  {
+   "id": 0,
+   "start": 0,
+   "end": 30,
+   "text": "c'est qu'il avait déjà épousé plusieurs femmes, et qu'on ne savait ce que ces femmes étaient devenues. La Barbe-Bleue, pour faire connaissance, les mena avec leur mère, et 3 ou 4 de leurs meilleurs amis, et quelques jeunes gens du voisinage, à une de ses maisons de campagne, où on demeura 8 jours entiers. Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations ; on ne dormait point, et on passait toute la nuit à se faire des malices les uns les autres. Enfin, tout alla si bien,"
+  }
+ ],
+ "words": []
+}

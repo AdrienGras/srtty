@@ -1,0 +1,500 @@
+{
+ "text": "<|speaker:0|> C'est qu'il avait déjà épousé plusieurs femmes, et qu'on ne savait ce que ces femmes étaient devenues. La Barbe-Bleue, pour faire connaissance, les mena avec leurs mères et trois ou quatre de leurs meilleures amies et quelques jeunes gens du voisinage, à une de ses maisons de campagne, où on demeura huit jours entiers. Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations. On ne dormait point, et on passait toute la nuit à se faire des malices les uns les autres. Enfin, tout alla si bien,",
+ "usage": {
+  "seconds": 30,
+  "cost": 0.003
+ },
+ "task": "transcribe",
+ "language": "fr",
+ "duration": 30,
+ "segments": [
+  {
+   "id": 0,
+   "start": 0.24,
+   "end": 29.84,
+   "text": "<|speaker:0|> C'est qu'il avait déjà épousé plusieurs femmes, et qu'on ne savait ce que ces femmes étaient devenues. La Barbe-Bleue, pour faire connaissance, les mena avec leurs mères et trois ou quatre de leurs meilleures amies et quelques jeunes gens du voisinage, à une de ses maisons de campagne, où on demeura huit jours entiers. Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations. On ne dormait point, et on passait toute la nuit à se faire des malices les uns les autres. Enfin, tout alla si bien,"
+  }
+ ],
+ "words": [
+  {
+   "word": "C'est",
+   "start": 0.24,
+   "end": 0.4
+  },
+  {
+   "word": "qu'il",
+   "start": 0.4,
+   "end": 0.56
+  },
+  {
+   "word": "avait",
+   "start": 0.56,
+   "end": 0.72
+  },
+  {
+   "word": "déjà",
+   "start": 0.72,
+   "end": 0.96
+  },
+  {
+   "word": "épousé",
+   "start": 0.96,
+   "end": 1.36
+  },
+  {
+   "word": "plusieurs",
+   "start": 1.36,
+   "end": 1.68
+  },
+  {
+   "word": "femmes",
+   "start": 1.68,
+   "end": 1.92
+  },
+  {
+   "word": "et",
+   "start": 2.56,
+   "end": 2.64
+  },
+  {
+   "word": "qu'on",
+   "start": 2.64,
+   "end": 2.72
+  },
+  {
+   "word": "ne",
+   "start": 2.72,
+   "end": 2.88
+  },
+  {
+   "word": "savait",
+   "start": 2.88,
+   "end": 3.2
+  },
+  {
+   "word": "ce",
+   "start": 3.2,
+   "end": 3.36
+  },
+  {
+   "word": "que",
+   "start": 3.36,
+   "end": 3.44
+  },
+  {
+   "word": "ces",
+   "start": 3.44,
+   "end": 3.6
+  },
+  {
+   "word": "femmes",
+   "start": 3.6,
+   "end": 3.84
+  },
+  {
+   "word": "étaient",
+   "start": 4,
+   "end": 4.16
+  },
+  {
+   "word": "devenues",
+   "start": 4.16,
+   "end": 4.64
+  },
+  {
+   "word": "La",
+   "start": 5.76,
+   "end": 5.84
+  },
+  {
+   "word": "Barbe",
+   "start": 5.84,
+   "end": 6.16
+  },
+  {
+   "word": "Bleue",
+   "start": 6.16,
+   "end": 6.4
+  },
+  {
+   "word": "pour",
+   "start": 6.4,
+   "end": 6.56
+  },
+  {
+   "word": "faire",
+   "start": 6.56,
+   "end": 6.72
+  },
+  {
+   "word": "connaissance",
+   "start": 6.8,
+   "end": 7.36
+  },
+  {
+   "word": "les",
+   "start": 7.68,
+   "end": 7.76
+  },
+  {
+   "word": "mena",
+   "start": 7.76,
+   "end": 8
+  },
+  {
+   "word": "avec",
+   "start": 8,
+   "end": 8.24
+  },
+  {
+   "word": "leurs",
+   "start": 8.24,
+   "end": 8.4
+  },
+  {
+   "word": "mères",
+   "start": 8.4,
+   "end": 8.56
+  },
+  {
+   "word": "et",
+   "start": 9.04,
+   "end": 9.12
+  },
+  {
+   "word": "trois",
+   "start": 9.12,
+   "end": 9.44
+  },
+  {
+   "word": "ou",
+   "start": 9.44,
+   "end": 9.6
+  },
+  {
+   "word": "quatre",
+   "start": 9.6,
+   "end": 10
+  },
+  {
+   "word": "de",
+   "start": 10,
+   "end": 10
+  },
+  {
+   "word": "leurs",
+   "start": 10.08,
+   "end": 10.32
+  },
+  {
+   "word": "meilleures",
+   "start": 10.32,
+   "end": 10.64
+  },
+  {
+   "word": "amies",
+   "start": 10.64,
+   "end": 10.88
+  },
+  {
+   "word": "et",
+   "start": 11.2,
+   "end": 11.28
+  },
+  {
+   "word": "quelques",
+   "start": 11.28,
+   "end": 11.6
+  },
+  {
+   "word": "jeunes",
+   "start": 11.6,
+   "end": 11.76
+  },
+  {
+   "word": "gens",
+   "start": 11.76,
+   "end": 12
+  },
+  {
+   "word": "du",
+   "start": 12,
+   "end": 12.08
+  },
+  {
+   "word": "voisinage",
+   "start": 12.08,
+   "end": 12.72
+  },
+  {
+   "word": "à",
+   "start": 13.04,
+   "end": 13.12
+  },
+  {
+   "word": "une",
+   "start": 13.12,
+   "end": 13.28
+  },
+  {
+   "word": "de",
+   "start": 13.28,
+   "end": 13.36
+  },
+  {
+   "word": "ses",
+   "start": 13.36,
+   "end": 13.52
+  },
+  {
+   "word": "maisons",
+   "start": 13.52,
+   "end": 13.76
+  },
+  {
+   "word": "de",
+   "start": 13.76,
+   "end": 13.84
+  },
+  {
+   "word": "campagne",
+   "start": 13.84,
+   "end": 14.48
+  },
+  {
+   "word": "où",
+   "start": 14.88,
+   "end": 14.96
+  },
+  {
+   "word": "on",
+   "start": 14.96,
+   "end": 14.96
+  },
+  {
+   "word": "demeura",
+   "start": 14.96,
+   "end": 15.44
+  },
+  {
+   "word": "huit",
+   "start": 15.52,
+   "end": 15.76
+  },
+  {
+   "word": "jours",
+   "start": 15.76,
+   "end": 16.16
+  },
+  {
+   "word": "entiers",
+   "start": 16.16,
+   "end": 16.64
+  },
+  {
+   "word": "Ce",
+   "start": 17.44,
+   "end": 17.6
+  },
+  {
+   "word": "n'était",
+   "start": 17.6,
+   "end": 17.84
+  },
+  {
+   "word": "que",
+   "start": 17.84,
+   "end": 17.92
+  },
+  {
+   "word": "promenades",
+   "start": 17.92,
+   "end": 18.72
+  },
+  {
+   "word": "que",
+   "start": 18.8,
+   "end": 18.88
+  },
+  {
+   "word": "parties",
+   "start": 18.88,
+   "end": 19.28
+  },
+  {
+   "word": "de",
+   "start": 19.28,
+   "end": 19.44
+  },
+  {
+   "word": "chasse",
+   "start": 19.44,
+   "end": 19.76
+  },
+  {
+   "word": "et",
+   "start": 19.76,
+   "end": 19.84
+  },
+  {
+   "word": "de",
+   "start": 19.84,
+   "end": 19.92
+  },
+  {
+   "word": "pêche",
+   "start": 19.92,
+   "end": 20.32
+  },
+  {
+   "word": "que",
+   "start": 20.64,
+   "end": 20.8
+  },
+  {
+   "word": "danses",
+   "start": 20.8,
+   "end": 21.28
+  },
+  {
+   "word": "et",
+   "start": 21.36,
+   "end": 21.44
+  },
+  {
+   "word": "festins",
+   "start": 21.44,
+   "end": 22
+  },
+  {
+   "word": "que",
+   "start": 22.24,
+   "end": 22.4
+  },
+  {
+   "word": "collations",
+   "start": 22.4,
+   "end": 22.96
+  },
+  {
+   "word": "On",
+   "start": 23.36,
+   "end": 23.44
+  },
+  {
+   "word": "ne",
+   "start": 23.44,
+   "end": 23.52
+  },
+  {
+   "word": "dormait",
+   "start": 23.52,
+   "end": 23.84
+  },
+  {
+   "word": "point",
+   "start": 23.84,
+   "end": 24.24
+  },
+  {
+   "word": "et",
+   "start": 24.48,
+   "end": 24.64
+  },
+  {
+   "word": "on",
+   "start": 24.64,
+   "end": 24.64
+  },
+  {
+   "word": "passait",
+   "start": 24.64,
+   "end": 24.96
+  },
+  {
+   "word": "toute",
+   "start": 25.12,
+   "end": 25.28
+  },
+  {
+   "word": "la",
+   "start": 25.28,
+   "end": 25.44
+  },
+  {
+   "word": "nuit",
+   "start": 25.44,
+   "end": 25.76
+  },
+  {
+   "word": "à",
+   "start": 25.76,
+   "end": 25.84
+  },
+  {
+   "word": "se",
+   "start": 25.84,
+   "end": 26
+  },
+  {
+   "word": "faire",
+   "start": 26,
+   "end": 26.24
+  },
+  {
+   "word": "des",
+   "start": 26.24,
+   "end": 26.32
+  },
+  {
+   "word": "malices",
+   "start": 26.32,
+   "end": 26.72
+  },
+  {
+   "word": "les",
+   "start": 26.72,
+   "end": 26.96
+  },
+  {
+   "word": "uns",
+   "start": 26.96,
+   "end": 27.04
+  },
+  {
+   "word": "les",
+   "start": 27.04,
+   "end": 27.28
+  },
+  {
+   "word": "autres",
+   "start": 27.28,
+   "end": 27.68
+  },
+  {
+   "word": "Enfin",
+   "start": 28.4,
+   "end": 28.64
+  },
+  {
+   "word": "tout",
+   "start": 29.04,
+   "end": 29.12
+  },
+  {
+   "word": "alla",
+   "start": 29.28,
+   "end": 29.44
+  },
+  {
+   "word": "si",
+   "start": 29.44,
+   "end": 29.6
+  },
+  {
+   "word": "bien",
+   "start": 29.6,
+   "end": 29.84
+  }
+ ]
+}

@@ -15,6 +15,7 @@ pub mod probe;
 pub mod providers;
 pub mod report;
 pub mod run;
+pub mod setup;
 pub mod transcribe;
 
 #[cfg(test)]

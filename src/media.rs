@@ -148,7 +148,7 @@ const OPUS_ARGS: [&str; 11] = [
 pub async fn extract_audio(input: &Path, out: &Path) -> Result<(), SrttyError> {
     let mut args: Vec<&std::ffi::OsStr> = vec!["-y".as_ref(), "-i".as_ref(), input.as_os_str()];
     args.extend(OPUS_ARGS.iter().map(std::ffi::OsStr::new));
-    args.push(out.as_os_str());
+    args.extend(["-f".as_ref(), "ogg".as_ref(), out.as_os_str()]);
     ffmpeg(&args).await.map(|_| ())
 }
 
@@ -222,19 +222,20 @@ pub fn plan_chunks(
 }
 
 /// Cut `[start, end]` out of `audio`, re-encoding so the bounds are exact.
+/// The seek is on the input side, so ffmpeg does not decode everything before `start`.
 pub async fn cut_chunk(audio: &Path, start: f64, end: f64, out: &Path) -> Result<(), SrttyError> {
-    let (start, end) = (start.to_string(), end.to_string());
+    let (start, len) = (start.to_string(), (end - start).to_string());
     let mut args: Vec<&std::ffi::OsStr> = vec![
         "-y".as_ref(),
-        "-i".as_ref(),
-        audio.as_os_str(),
         "-ss".as_ref(),
         start.as_ref(),
-        "-to".as_ref(),
-        end.as_ref(),
+        "-t".as_ref(),
+        len.as_ref(),
+        "-i".as_ref(),
+        audio.as_os_str(),
     ];
     args.extend(OPUS_ARGS.iter().map(std::ffi::OsStr::new));
-    args.push(out.as_os_str());
+    args.extend(["-f".as_ref(), "ogg".as_ref(), out.as_os_str()]);
     ffmpeg(&args).await.map(|_| ())
 }
 
@@ -308,6 +309,43 @@ mod tests {
     }
 
     #[test]
+    fn plan_chunks_ignores_silence_just_outside_window() {
+        // midpoint 331 is 31 s from the goal (300), window is 30 -> cut at the goal
+        let sil = [Silence {
+            start: 330.0,
+            end: 332.0,
+        }];
+        assert_eq!(
+            plan_chunks(500.0 + 300.0, 300.0, &sil, 30.0)[0],
+            (0.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn plan_chunks_never_stalls_or_goes_backwards() {
+        // midpoints at or before the current position (0.0 and 300.0) must be ignored
+        let sil = [
+            Silence {
+                start: -0.5,
+                end: 0.5,
+            },
+            Silence {
+                start: 299.0,
+                end: 301.0,
+            },
+            Silence {
+                start: 280.0,
+                end: 290.0,
+            },
+        ];
+        let c = plan_chunks(1000.0, 300.0, &sil, 400.0);
+        assert!(c.iter().all(|(a, b)| b > a), "{c:?}");
+        assert_eq!(c[0].0, 0.0);
+        assert!(c.windows(2).all(|w| w[0].1 == w[1].0), "{c:?}");
+        assert_eq!(c.last().unwrap().1, 1000.0);
+    }
+
+    #[test]
     fn short_input_is_one_chunk() {
         assert_eq!(plan_chunks(0.8, 300.0, &[], 30.0), vec![(0.0, 0.8)]);
     }
@@ -345,6 +383,20 @@ mod tests {
         let part = d.path().join("p.ogg");
         cut_chunk(&ogg, 5.0, 15.0, &part).await.unwrap();
         assert!((probe_duration(&part).await.unwrap() - 10.0).abs() < 0.2);
+    }
+
+    #[tokio::test]
+    async fn output_is_ogg_regardless_of_extension() {
+        let d = tempfile::tempdir().unwrap();
+        let src = tone_with_silences(d.path(), 12);
+        let a = d.path().join("a.part");
+        extract_audio(&src, &a).await.unwrap();
+        let b = d.path().join("b.part");
+        cut_chunk(&a, 2.0, 7.0, &b).await.unwrap();
+        for f in [&a, &b] {
+            let head = std::fs::read(f).unwrap();
+            assert_eq!(&head[..4], b"OggS", "{}", f.display());
+        }
     }
 
     #[tokio::test]

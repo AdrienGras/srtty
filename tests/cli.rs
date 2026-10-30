@@ -418,3 +418,79 @@ async fn models_works_offline_with_compat_fallback() {
     assert_eq!(v["compat"]["source"], "embedded");
     assert_eq!(v["warnings"].as_array().unwrap().len(), 1);
 }
+
+/// Serves the three OpenRouter endpoints `compat probe` calls, for one model `m/one`.
+async fn openrouter_server() -> MockServer {
+    let server = MockServer::start().await;
+    let listing = r#"{"data":[{"id":"m/one","architecture":{"output_modalities":["transcription"]},
+        "pricing":{"prompt":"0.00001","completion":"0"}}]}"#;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(listing, "application/json"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/models/m/one/endpoints"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"data":{"endpoints":[{"tag":"p"}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    let diarized = std::fs::read(Path::new("tests/fixtures/grok_diar.json")).unwrap();
+    Mock::given(method("POST"))
+        .and(path("/api/v1/audio/transcriptions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(diarized, "application/json"))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unchanged_content_is_not_rewritten() {
+    let server = openrouter_server().await;
+    let sb = Sandbox::config_only("http://unused", "m", 300.0);
+    let probe = |sb: &Sandbox| {
+        let mut cmd = sb.cmd_with_key();
+        cmd.args(["compat", "probe", "--api-key-env", KEY_ENV, "--base-url"])
+            .arg(format!("{}/api/v1", server.uri()))
+            .args(["--output", "out.json"]);
+        cmd
+    };
+
+    let out = run(probe(&sb)).await;
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    eprintln!("probe stderr: {}", text(&out.stderr));
+    let file = sb.dir.path().join("out.json");
+    let first = std::fs::read_to_string(&file).unwrap();
+    assert!(first.contains("m/one"), "{first}");
+    assert!(first.contains(r#""diarize": true"#), "{first}");
+    assert!(!text(&out.stderr).contains(KEY));
+
+    let mut doc: serde_json::Value = serde_json::from_str(&first).unwrap();
+    doc["generated_at"] = "old".into();
+    std::fs::write(&file, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+    let out = run(probe(&sb)).await;
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stderr.contains("unchanged"), "{stderr}");
+    assert!(
+        std::fs::read_to_string(&file).unwrap().contains(r#""old""#),
+        "file was rewritten"
+    );
+
+    let help = run({
+        let mut cmd = sb.cmd();
+        cmd.arg("--help");
+        cmd
+    })
+    .await;
+    // The tagline says "OpenAI-compatible" and `models` says "compatibility":
+    // look for the subcommand itself.
+    let help = text(&help.stdout);
+    assert!(
+        !help.lines().any(|l| l.trim_start().starts_with("compat")),
+        "{help}"
+    );
+}

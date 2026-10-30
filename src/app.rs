@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::assemble::CueRules;
 use crate::cache::{CacheParams, ChunkCache};
-use crate::cli::{Cli, Command, ConfigAction};
+use crate::cli::{Cli, Command, CompatAction, ConfigAction};
 use crate::compat::{CompatEntry, CompatList, estimate_cost_usd, provider_key};
 use crate::config::{self, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig};
 use crate::error::SrttyError;
@@ -34,6 +34,9 @@ pub async fn main(cli: Cli) -> Result<(), SrttyError> {
             action: ConfigAction::Show,
         }) => show_config(&cli),
         Some(Command::Models) => crate::models::run(&cli).await,
+        Some(Command::Compat {
+            action: CompatAction::Probe(args),
+        }) => crate::compat_probe::run(&args).await,
         None => transcribe(cli).await,
     }
 }

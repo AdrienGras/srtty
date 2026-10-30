@@ -3,6 +3,7 @@ pub mod assemble;
 pub mod cache;
 pub mod cli;
 pub mod compat;
+pub mod compat_probe;
 pub mod config;
 pub mod error;
 pub mod fsutil;

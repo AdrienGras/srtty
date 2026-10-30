@@ -13,7 +13,7 @@ local = []
 clap = { version = "4.6", features = ["derive"] }
 miette = { version = "7", features = ["fancy"] }
 thiserror = "2"
-tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "process", "fs"] }
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "process", "fs", "time"] }
 etcetera = "0.11"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
@@ -22,7 +22,9 @@ async-trait = "0.1.92"
 reqwest = { version = "0.13", default-features = false, features = ["multipart", "json", "rustls"] }
 base64 = "0.23.1"
 sha2 = "0.11"
+tokio-util = "0.7.20"
+futures = "0.3"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 wiremock = "0.6"

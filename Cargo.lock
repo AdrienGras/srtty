@@ -1617,6 +1617,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "etcetera",
+ "futures",
  "miette",
  "reqwest",
  "serde",
@@ -1625,6 +1626,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml",
  "wiremock",
 ]

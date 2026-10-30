@@ -8,6 +8,8 @@ pub mod error;
 pub mod media;
 pub mod output;
 pub mod paths;
+pub mod report;
+pub mod run;
 pub mod transcribe;
 
 #[cfg(test)]

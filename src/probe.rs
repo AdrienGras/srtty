@@ -105,17 +105,30 @@ pub fn write_sample(bytes: &[u8], duration_s: f64) -> std::io::Result<SampleFile
     })
 }
 
-/// Transcribes the sample in French and classifies the answer.
+fn sample_options() -> TranscribeOptions {
+    TranscribeOptions {
+        language: Some(SAMPLE_LANGUAGE.into()),
+        ..Default::default()
+    }
+}
+
+/// Transcribes the sample in French, retrying transient failures, and
+/// classifies the answer.
 pub async fn probe_model(
     t: &dyn Transcriber,
     sample: &AudioChunk,
     reporter: &dyn Reporter,
 ) -> Result<ProbeOutcome, TranscribeError> {
-    let opts = TranscribeOptions {
-        language: Some(SAMPLE_LANGUAGE.into()),
-        ..Default::default()
-    };
-    classify(transcribe_with_retry(t, sample, &opts, reporter).await)
+    classify(transcribe_with_retry(t, sample, &sample_options(), reporter).await)
+}
+
+/// Same as [`probe_model`] with a single attempt: the user agreed to pay for
+/// one request, so a transient failure is inconclusive, not retried.
+pub async fn probe_model_once(
+    t: &dyn Transcriber,
+    sample: &AudioChunk,
+) -> Result<ProbeOutcome, TranscribeError> {
+    classify(t.transcribe(sample, &sample_options()).await)
 }
 
 /// Asks for diarization with `option` and counts the voices in the answer.

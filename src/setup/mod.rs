@@ -4,7 +4,7 @@
 pub mod prompt;
 pub mod write;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -12,14 +12,13 @@ use crate::compat::{CompatList, ModelStatus, REFRESH_TIMEOUT, provider_key, refr
 use crate::config::{ApiKey, RequestMode, is_env_var_name, looks_like_api_key};
 use crate::error::SrttyError;
 use crate::models::{ModelRow, Target, fetch_rows, rows};
-use crate::probe::{ProbeOutcome, SAMPLE, SAMPLE_S, Verdict, probe_model, write_sample};
+use crate::probe::{ProbeOutcome, SAMPLE, SAMPLE_S, Verdict, probe_model_once, write_sample};
 use crate::providers::{ListedModel, Listing, PRESETS};
-use crate::report::PlainReporter;
 use crate::transcribe::TranscribeError;
 use crate::transcribe::openai::OpenAiCompatible;
 
 pub use prompt::{InquirePrompter, Prompter};
-use write::{ProviderChoice, apply, write_config};
+use write::{ProviderChoice, apply, check_existing, write_config};
 
 /// Runs the paid sample test of a model.
 #[async_trait]
@@ -32,7 +31,7 @@ pub trait SampleTester: Send + Sync {
     ) -> Result<ProbeOutcome, TranscribeError>;
 }
 
-/// Transcribes the embedded 30 s sample with the provider.
+/// Transcribes the embedded 30 s sample with the provider, in one attempt.
 pub struct LiveTester;
 
 #[async_trait]
@@ -53,8 +52,7 @@ impl SampleTester for LiveTester {
             model.to_string(),
             RequestMode::Multipart,
         );
-        let reporter = PlainReporter::new(Box::new(std::io::stderr()));
-        probe_model(&t, &sample.chunk, &reporter).await
+        probe_model_once(&t, &sample.chunk).await
     }
 }
 
@@ -86,6 +84,8 @@ pub async fn run_setup(
     p: &mut dyn Prompter,
     ctx: &SetupContext<'_>,
 ) -> Result<SetupDone, SrttyError> {
+    // A file `setup` cannot update is reported before any question.
+    let existing = read_existing(&ctx.config_path)?;
     let (name, base_url, default_var) = choose_provider(p)?;
     let var = p.text(
         "Environment variable holding the API key:",
@@ -126,6 +126,7 @@ pub async fn run_setup(
     finish(
         p,
         ctx,
+        existing.as_deref(),
         &ProviderChoice {
             name,
             base_url,
@@ -309,16 +310,11 @@ fn test_question(id: &str, row: Option<&ModelRow>) -> String {
     format!("Test {id} on a {SAMPLE_S} s sample? Estimated cost: {cost}")
 }
 
-/// Writes the config file, asking first when one exists.
-fn finish(
-    p: &mut dyn Prompter,
-    ctx: &SetupContext<'_>,
-    choice: &ProviderChoice,
-) -> Result<SetupDone, SrttyError> {
-    let path = &ctx.config_path;
-    let existing = match std::fs::read_to_string(path) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+/// The current config file, if any, once checked that `setup` can update it.
+fn read_existing(path: &Path) -> Result<Option<String>, SrttyError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(SrttyError::Config(format!(
                 "cannot read {}: {e}",
@@ -326,11 +322,28 @@ fn finish(
             )));
         }
     };
-    let text = apply(existing.as_deref(), choice)?;
+    check_existing(&text).map_err(|reason| {
+        SrttyError::Config(format!(
+            "cannot update {}: {reason}. Fix or move this file, then run `srtty setup` again.",
+            path.display()
+        ))
+    })?;
+    Ok(Some(text))
+}
+
+/// Writes the config file, asking first when one exists.
+fn finish(
+    p: &mut dyn Prompter,
+    ctx: &SetupContext<'_>,
+    existing: Option<&str>,
+    choice: &ProviderChoice,
+) -> Result<SetupDone, SrttyError> {
+    let path = &ctx.config_path;
+    let text = apply(existing, choice)?;
     if existing.is_some()
         && !p.confirm(
             &format!(
-                "Update {}? This sets default_provider = \"{}\" and replaces [providers.{}].",
+                "Update {}? This sets default_provider = \"{}\" and updates [providers.{}].",
                 path.display(),
                 choice.name,
                 choice.name
@@ -450,10 +463,9 @@ mod tests {
 
     impl ScriptedPrompter {
         fn new(script: Vec<Answer>) -> Self {
-            Self {
-                script: script.into(),
-                ..Default::default()
-            }
+            let mut p = Self::default();
+            p.script = script.into();
+            p
         }
 
         fn next(&mut self, message: &str) -> Answer {
@@ -470,6 +482,19 @@ mod tests {
             let mut all = self.shown.clone();
             all.extend(self.validator_errors.iter().cloned());
             all.join("\n")
+        }
+    }
+
+    /// A test that leaves answers unused did not go where it meant to.
+    impl Drop for ScriptedPrompter {
+        fn drop(&mut self) {
+            if !std::thread::panicking() {
+                assert!(
+                    self.script.is_empty(),
+                    "unused scripted answers: {:?}",
+                    self.script
+                );
+            }
         }
     }
 
@@ -535,17 +560,25 @@ mod tests {
         }
     }
 
-    /// Answers every test with `verdict` and counts its calls.
+    /// Answers every test with `verdict` (an authentication failure when
+    /// `None`) and counts its calls.
     struct FakeTester {
         calls: AtomicUsize,
-        verdict: Verdict,
+        verdict: Option<Verdict>,
     }
 
     impl FakeTester {
         fn new(verdict: Verdict) -> Self {
             Self {
                 calls: AtomicUsize::new(0),
-                verdict,
+                verdict: Some(verdict),
+            }
+        }
+
+        fn auth_failure() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                verdict: None,
             }
         }
 
@@ -563,10 +596,13 @@ mod tests {
             _model: &str,
         ) -> Result<ProbeOutcome, TranscribeError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ProbeOutcome {
-                verdict: self.verdict.clone(),
-                cost_usd: Some(0.0008),
-            })
+            match &self.verdict {
+                Some(verdict) => Ok(ProbeOutcome {
+                    verdict: verdict.clone(),
+                    cost_usd: Some(0.0008),
+                }),
+                None => Err(TranscribeError::Auth { status: 401 }),
+            }
         }
     }
 
@@ -882,7 +918,7 @@ mod tests {
         assert_eq!(
             p.prompts.last().unwrap(),
             &format!(
-                "Update {path}? This sets default_provider = \"mock\" and replaces [providers.mock]."
+                "Update {path}? This sets default_provider = \"mock\" and updates [providers.mock]."
             )
         );
         assert_eq!(p.said.last().unwrap(), "Nothing written.");
@@ -1051,5 +1087,138 @@ mod tests {
         assert_eq!(p.options[1], ["Enter a model id"]);
         assert!(p.prompts.contains(&"Model id:".to_string()));
         assert_eq!(written_model(&ctx.config_path).1, "my-model");
+    }
+
+    #[test]
+    fn test_question_states_the_cost() {
+        let priced = row("a/b", Some(0.096), ModelStatus::Compatible);
+        assert_eq!(
+            test_question("a/b", Some(&priced)),
+            "Test a/b on a 30 s sample? Estimated cost: $0.0008."
+        );
+        let token = ModelRow {
+            token_priced: true,
+            url: Some("https://openrouter.ai/g/t".into()),
+            ..row("g/t", None, ModelStatus::Compatible)
+        };
+        assert_eq!(
+            test_question("g/t", Some(&token)),
+            "Test g/t on a 30 s sample? Estimated cost: unknown (billed per token, see https://openrouter.ai/g/t)."
+        );
+        assert_eq!(
+            test_question("x", None),
+            "Test x on a 30 s sample? Estimated cost: unknown."
+        );
+    }
+
+    /// Picks whisper-1, accepts the paid test, and returns what was said.
+    async fn tested_flow(tester: &FakeTester) -> Vec<String> {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx(&dir, &server, &env_with_key, tester);
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![Answer::Select(0), Answer::Confirm(true)],
+        ));
+        run_setup(&mut p, &ctx).await.unwrap();
+        assert_eq!(tester.calls(), 1);
+        assert_eq!(written_model(&ctx.config_path).1, "whisper-1");
+        assert!(!p.prompts.iter().any(|m| m.starts_with("Keep ")));
+        assert!(!p.everything().contains(KEY_VALUE));
+        p.said.clone()
+    }
+
+    #[tokio::test]
+    async fn inconclusive_test_keeps_the_model() {
+        let tester = FakeTester::new(Verdict::Inconclusive("HTTP 503".into()));
+        let said = tested_flow(&tester).await;
+        assert!(
+            said.contains(&"! Test inconclusive: HTTP 503 (cost $0.0008)".to_string()),
+            "{said:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_failure_names_the_variable_and_keeps_the_model() {
+        let tester = FakeTester::auth_failure();
+        let said = tested_flow(&tester).await;
+        assert!(
+            said.contains(&"✘ Authentication failed; check K.".to_string()),
+            "{said:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn segments_without_words_pass_the_test() {
+        let tester = FakeTester::new(Verdict::Usable {
+            words: false,
+            fine_segments: true,
+        });
+        let said = tested_flow(&tester).await;
+        assert!(
+            said.contains(
+                &"✔ Test passed: fine segments, no word timestamps. (cost $0.0008)".to_string()
+            ),
+            "{said:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_existing_config_fails_before_any_prompt() {
+        let server = server(200).await;
+        for (before, expected) in [
+            ("[providers.mock]\nmodle = \"x\"\n", "unknown field"),
+            (
+                "[providers.mock]\napi_key_env = sk-or-v1-0123secret\n",
+                "not valid TOML at line 2",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let tester = FakeTester::new(usable());
+            let ctx = ctx(&dir, &server, &env_with_key, &tester);
+            std::fs::write(&ctx.config_path, before).unwrap();
+            let mut p = ScriptedPrompter::new(vec![]);
+
+            let err = run_setup(&mut p, &ctx).await.unwrap_err();
+
+            assert!(matches!(err, SrttyError::Config(_)), "{err}");
+            let msg = err.to_string();
+            let path = ctx.config_path.display().to_string();
+            assert!(msg.starts_with(&format!("cannot update {path}: ")), "{msg}");
+            assert!(msg.contains(expected), "{msg}");
+            assert!(
+                msg.ends_with(". Fix or move this file, then run `srtty setup` again."),
+                "{msg}"
+            );
+            assert!(!msg.contains("0123secret"), "{msg}");
+            assert!(p.prompts.is_empty(), "{:?}", p.prompts);
+            assert_eq!(tester.calls(), 0);
+            assert_eq!(std::fs::read_to_string(&ctx.config_path).unwrap(), before);
+        }
+    }
+
+    #[tokio::test]
+    async fn live_test_makes_a_single_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
+            .mount(&server)
+            .await;
+
+        let outcome = LiveTester
+            .test(
+                &format!("{}/v1", server.uri()),
+                &ApiKey(KEY_VALUE.into()),
+                "m",
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(outcome.verdict, Verdict::Inconclusive(_)),
+            "{outcome:?}"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

@@ -111,22 +111,27 @@ impl Config {
             // The default rendering quotes the offending source line, which may
             // hold a pasted API key: report only the position and the message,
             // with any key-like word masked (type errors echo the value).
-            let position = e
-                .span()
-                .map(|span| {
-                    let before = text.get(..span.start).unwrap_or(&text);
-                    let line = before.matches('\n').count() + 1;
-                    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-                    format!(" at line {line}, column {column}")
-                })
-                .unwrap_or_default();
             SrttyError::Config(format!(
-                "invalid config {}{position}: {}",
+                "invalid config {}{}: {}",
                 path.display(),
+                toml_error_position(&text, e.span()),
                 redact_key_like(e.message())
             ))
         })
     }
+}
+
+/// ` at line L, column C` for the start of `span` in `text`, or nothing
+/// without a span. A TOML error is reported by its position only: the source
+/// line may hold a pasted API key.
+pub fn toml_error_position(text: &str, span: Option<std::ops::Range<usize>>) -> String {
+    span.map(|span| {
+        let before = text.get(..span.start).unwrap_or(text);
+        let line = before.matches('\n').count() + 1;
+        let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+        format!(" at line {line}, column {column}")
+    })
+    .unwrap_or_default()
 }
 
 /// An API key. Never printed: `Debug` and `Display` both show `***`.

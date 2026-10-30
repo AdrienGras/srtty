@@ -5,7 +5,7 @@ use std::path::Path;
 
 use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
-use crate::config::{Config, redact_key_like};
+use crate::config::{Config, check_key_var_name, redact_key_like, toml_error_position};
 use crate::error::SrttyError;
 use crate::fsutil::write_atomic;
 
@@ -17,25 +17,37 @@ pub struct ProviderChoice {
     pub model: String,
 }
 
+/// Checks that an existing config file can be updated: it is TOML and
+/// `Config` accepts it. The reason never quotes the file, which may hold a
+/// pasted key.
+pub fn check_existing(text: &str) -> Result<(), String> {
+    text.parse::<DocumentMut>().map_err(|e| {
+        format!(
+            "it is not valid TOML{}",
+            toml_error_position(text, e.span())
+        )
+    })?;
+    toml::from_str::<Config>(text).map_err(|e| {
+        format!(
+            "invalid config{}: {}",
+            toml_error_position(text, e.span()),
+            redact_key_like(e.message())
+        )
+    })?;
+    Ok(())
+}
+
 /// Applies `choice` to the config text: sets `default_provider` and the
-/// `base_url`, `api_key_env` and `model` of `[providers.<name>]`. Everything
-/// else (comments, other providers, unmanaged keys) is left as it was.
+/// `base_url`, `api_key_env` and `model` of `[providers.<name>]`, and removes
+/// its `kind` (an API provider is the default). Everything else (comments,
+/// other providers, unmanaged keys) is left as it was.
 pub fn apply(existing: Option<&str>, choice: &ProviderChoice) -> Result<String, SrttyError> {
+    check_key_var_name(&choice.api_key_env)?;
     let text = existing.unwrap_or("");
     let mut doc = text.parse::<DocumentMut>().map_err(|e| {
-        // The default rendering quotes the offending source line, which may
-        // hold a pasted API key: report only the position.
-        let position = e
-            .span()
-            .map(|span| {
-                let before = text.get(..span.start).unwrap_or(text);
-                let line = before.matches('\n').count() + 1;
-                let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-                format!(" at line {line}, column {column}")
-            })
-            .unwrap_or_default();
         SrttyError::Config(format!(
-            "cannot update the config file: it is not valid TOML{position}"
+            "cannot update the config file: it is not valid TOML{}",
+            toml_error_position(text, e.span())
         ))
     })?;
 
@@ -55,16 +67,20 @@ pub fn apply(existing: Option<&str>, choice: &ProviderChoice) -> Result<String, 
         .or_insert_with(|| Item::Table(Table::new()))
         .as_table_like_mut()
         .ok_or_else(|| not_a_table(&format!("providers.{}", choice.name)))?;
+    provider.remove("kind");
     set_string(provider, "base_url", &choice.base_url);
     set_string(provider, "api_key_env", &choice.api_key_env);
     set_string(provider, "model", &choice.model);
 
     let out = doc.to_string();
     toml::from_str::<Config>(&out).map_err(|e| {
-        SrttyError::Config(format!(
-            "the updated config would be invalid: {}",
-            redact_key_like(e.message())
-        ))
+        let message = redact_key_like(e.message());
+        // `setup` only writes known keys: an unknown one was already there.
+        if e.message().starts_with("unknown field") {
+            SrttyError::Config(format!("cannot update the existing config file: {message}"))
+        } else {
+            SrttyError::Config(format!("the updated config would be invalid: {message}"))
+        }
     })?;
     Ok(out)
 }
@@ -98,7 +114,7 @@ fn set_string(table: &mut dyn TableLike, key: &str, new: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, RequestMode};
+    use crate::config::{Config, ProviderKind, RequestMode};
 
     fn choice() -> ProviderChoice {
         ProviderChoice {
@@ -195,5 +211,36 @@ mod tests {
         let path = d.path().join("sub/config.toml");
         write_config(&path, "a = 1\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 1\n");
+    }
+
+    #[test]
+    fn apply_resets_the_provider_kind() {
+        let existing = "[providers.openrouter]\nkind = \"local\"\nmodel_path = \"/m.bin\"\n";
+        let text = apply(Some(existing), &choice()).unwrap();
+        assert!(!text.contains("kind"), "{text}");
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.providers["openrouter"].kind, ProviderKind::Api);
+    }
+
+    #[test]
+    fn apply_refuses_a_key_as_variable_name_without_echo() {
+        let bad = ProviderChoice {
+            api_key_env: "sk-or-v1-0123secret".into(),
+            ..choice()
+        };
+        let err = apply(None, &bad).unwrap_err();
+        assert!(matches!(err, SrttyError::Config(_)), "{err}");
+        let msg = err.to_string();
+        assert!(!msg.contains("0123secret"), "{msg}");
+        assert!(msg.contains("name of an environment variable"), "{msg}");
+    }
+
+    #[test]
+    fn apply_blames_the_existing_file_for_an_unknown_field() {
+        let err = apply(Some("[providers.groq]\nmodle = \"x\"\n"), &choice())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the existing config file"), "{err}");
+        assert!(err.contains("unknown field `modle`"), "{err}");
     }
 }

@@ -1,0 +1,554 @@
+{
+ "text": "C'est qu'il avait déjà épousé plusieurs femmes et qu'on ne savait ce que ces femmes étaient devenues. La barbe bleuë, pour faire connaissance, les mena avec leur mère et trois ou quatre de leurs meilleurs amis et quelques jeunes gens du voisinage à une de ces maisons de campagne où on demeura huit jours entiers. Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations. On ne dormait point et on passait toute la nuit à se faire des malices les uns les autres. Enfin, tout alla si bien.",
+ "usage": {
+  "seconds": 30,
+  "cost": 0.000999
+ },
+ "task": "transcribe",
+ "language": "fr",
+ "duration": 30,
+ "segments": [
+  {
+   "id": 0,
+   "seek": 0,
+   "start": 0.23999999463558197,
+   "end": 4.630000114440918,
+   "text": "C'est qu'il avait déjà épousé plusieurs femmes et qu'on ne savait ce que ces femmes étaient devenues.",
+   "tokens": [],
+   "temperature": 0,
+   "avg_logprob": 0,
+   "compression_ratio": 0,
+   "no_speech_prob": 0
+  },
+  {
+   "id": 1,
+   "seek": 0,
+   "start": 5.690000057220459,
+   "end": 16.639999389648438,
+   "text": "La barbe bleuë, pour faire connaissance, les mena avec leur mère et trois ou quatre de leurs meilleurs amis et quelques jeunes gens du voisinage à une de ces maisons de campagne où on demeura huit jours entiers.",
+   "tokens": [],
+   "temperature": 0,
+   "avg_logprob": 0,
+   "compression_ratio": 0,
+   "no_speech_prob": 0
+  },
+  {
+   "id": 2,
+   "seek": 0,
+   "start": 17.459999084472656,
+   "end": 23.020000457763672,
+   "text": "Ce n'était que promenades, que parties de chasse et de pêche, que danses et festins, que collations.",
+   "tokens": [],
+   "temperature": 0,
+   "avg_logprob": 0,
+   "compression_ratio": 0,
+   "no_speech_prob": 0
+  },
+  {
+   "id": 3,
+   "seek": 0,
+   "start": 23.360000610351562,
+   "end": 27.6200008392334,
+   "text": "On ne dormait point et on passait toute la nuit à se faire des malices les uns les autres.",
+   "tokens": [],
+   "temperature": 0,
+   "avg_logprob": 0,
+   "compression_ratio": 0,
+   "no_speech_prob": 0
+  },
+  {
+   "id": 4,
+   "seek": 0,
+   "start": 28.399999618530273,
+   "end": 29.90999984741211,
+   "text": "Enfin, tout alla si bien.",
+   "tokens": [],
+   "temperature": 0,
+   "avg_logprob": 0,
+   "compression_ratio": 0,
+   "no_speech_prob": 0
+  }
+ ],
+ "words": [
+  {
+   "word": "C'est",
+   "start": 0.23999999463558197,
+   "end": 0.4000000059604645
+  },
+  {
+   "word": "qu'il",
+   "start": 0.4000000059604645,
+   "end": 0.5600000023841858
+  },
+  {
+   "word": "avait",
+   "start": 0.5600000023841858,
+   "end": 0.800000011920929
+  },
+  {
+   "word": "déjà",
+   "start": 0.800000011920929,
+   "end": 1.0399999618530273
+  },
+  {
+   "word": "épousé",
+   "start": 1.0399999618530273,
+   "end": 1.440000057220459
+  },
+  {
+   "word": "plusieurs",
+   "start": 1.440000057220459,
+   "end": 1.7599999904632568
+  },
+  {
+   "word": "femmes",
+   "start": 1.7599999904632568,
+   "end": 2.0899999141693115
+  },
+  {
+   "word": "et",
+   "start": 2.5299999713897705,
+   "end": 2.5999999046325684
+  },
+  {
+   "word": "qu'on",
+   "start": 2.5999999046325684,
+   "end": 2.799999952316284
+  },
+  {
+   "word": "ne",
+   "start": 2.799999952316284,
+   "end": 2.9600000381469727
+  },
+  {
+   "word": "savait",
+   "start": 2.9600000381469727,
+   "end": 3.2799999713897705
+  },
+  {
+   "word": "ce",
+   "start": 3.2799999713897705,
+   "end": 3.359999895095825
+  },
+  {
+   "word": "que",
+   "start": 3.359999895095825,
+   "end": 3.5199999809265137
+  },
+  {
+   "word": "ces",
+   "start": 3.5199999809265137,
+   "end": 3.680000066757202
+  },
+  {
+   "word": "femmes",
+   "start": 3.680000066757202,
+   "end": 4
+  },
+  {
+   "word": "étaient",
+   "start": 4,
+   "end": 4.239999771118164
+  },
+  {
+   "word": "devenues.",
+   "start": 4.239999771118164,
+   "end": 4.630000114440918
+  },
+  {
+   "word": "La",
+   "start": 5.690000057220459,
+   "end": 5.840000152587891
+  },
+  {
+   "word": "barbe",
+   "start": 5.840000152587891,
+   "end": 6.159999847412109
+  },
+  {
+   "word": "bleuë,",
+   "start": 6.159999847412109,
+   "end": 6.400000095367432
+  },
+  {
+   "word": "pour",
+   "start": 6.400000095367432,
+   "end": 6.559999942779541
+  },
+  {
+   "word": "faire",
+   "start": 6.559999942779541,
+   "end": 6.800000190734863
+  },
+  {
+   "word": "connaissance,",
+   "start": 6.800000190734863,
+   "end": 7.380000114440918
+  },
+  {
+   "word": "les",
+   "start": 7.659999847412109,
+   "end": 7.840000152587891
+  },
+  {
+   "word": "mena",
+   "start": 7.840000152587891,
+   "end": 8.079999923706055
+  },
+  {
+   "word": "avec",
+   "start": 8.079999923706055,
+   "end": 8.319999694824219
+  },
+  {
+   "word": "leur",
+   "start": 8.319999694824219,
+   "end": 8.479999542236328
+  },
+  {
+   "word": "mère",
+   "start": 8.479999542236328,
+   "end": 8.760000228881836
+  },
+  {
+   "word": "et",
+   "start": 9.020000457763672,
+   "end": 9.199999809265137
+  },
+  {
+   "word": "trois",
+   "start": 9.199999809265137,
+   "end": 9.520000457763672
+  },
+  {
+   "word": "ou",
+   "start": 9.520000457763672,
+   "end": 9.680000305175781
+  },
+  {
+   "word": "quatre",
+   "start": 9.680000305175781,
+   "end": 10
+  },
+  {
+   "word": "de",
+   "start": 10,
+   "end": 10.15999984741211
+  },
+  {
+   "word": "leurs",
+   "start": 10.15999984741211,
+   "end": 10.319999694824219
+  },
+  {
+   "word": "meilleurs",
+   "start": 10.319999694824219,
+   "end": 10.640000343322754
+  },
+  {
+   "word": "amis",
+   "start": 10.640000343322754,
+   "end": 10.90999984741211
+  },
+  {
+   "word": "et",
+   "start": 11.199999809265137,
+   "end": 11.210000038146973
+  },
+  {
+   "word": "quelques",
+   "start": 11.210000038146973,
+   "end": 11.600000381469727
+  },
+  {
+   "word": "jeunes",
+   "start": 11.600000381469727,
+   "end": 11.84000015258789
+  },
+  {
+   "word": "gens",
+   "start": 11.84000015258789,
+   "end": 12
+  },
+  {
+   "word": "du",
+   "start": 12,
+   "end": 12.15999984741211
+  },
+  {
+   "word": "voisinage",
+   "start": 12.15999984741211,
+   "end": 12.699999809265137
+  },
+  {
+   "word": "à",
+   "start": 12.989999771118164,
+   "end": 13.119999885559082
+  },
+  {
+   "word": "une",
+   "start": 13.119999885559082,
+   "end": 13.279999732971191
+  },
+  {
+   "word": "de",
+   "start": 13.279999732971191,
+   "end": 13.4399995803833
+  },
+  {
+   "word": "ces",
+   "start": 13.4399995803833,
+   "end": 13.600000381469727
+  },
+  {
+   "word": "maisons",
+   "start": 13.600000381469727,
+   "end": 13.84000015258789
+  },
+  {
+   "word": "de",
+   "start": 13.84000015258789,
+   "end": 14
+  },
+  {
+   "word": "campagne",
+   "start": 14,
+   "end": 14.470000267028809
+  },
+  {
+   "word": "où",
+   "start": 14.800000190734863,
+   "end": 14.829999923706055
+  },
+  {
+   "word": "on",
+   "start": 14.829999923706055,
+   "end": 15.039999961853027
+  },
+  {
+   "word": "demeura",
+   "start": 15.039999961853027,
+   "end": 15.600000381469727
+  },
+  {
+   "word": "huit",
+   "start": 15.600000381469727,
+   "end": 15.84000015258789
+  },
+  {
+   "word": "jours",
+   "start": 15.84000015258789,
+   "end": 16.239999771118164
+  },
+  {
+   "word": "entiers.",
+   "start": 16.239999771118164,
+   "end": 16.639999389648438
+  },
+  {
+   "word": "Ce",
+   "start": 17.459999084472656,
+   "end": 17.639999389648438
+  },
+  {
+   "word": "n'était",
+   "start": 17.639999389648438,
+   "end": 17.84000015258789
+  },
+  {
+   "word": "que",
+   "start": 17.84000015258789,
+   "end": 18.15999984741211
+  },
+  {
+   "word": "promenades,",
+   "start": 18.15999984741211,
+   "end": 18.799999237060547
+  },
+  {
+   "word": "que",
+   "start": 18.799999237060547,
+   "end": 19.040000915527344
+  },
+  {
+   "word": "parties",
+   "start": 19.040000915527344,
+   "end": 19.360000610351562
+  },
+  {
+   "word": "de",
+   "start": 19.360000610351562,
+   "end": 19.520000457763672
+  },
+  {
+   "word": "chasse",
+   "start": 19.520000457763672,
+   "end": 19.760000228881836
+  },
+  {
+   "word": "et",
+   "start": 19.760000228881836,
+   "end": 19.84000015258789
+  },
+  {
+   "word": "de",
+   "start": 19.84000015258789,
+   "end": 20
+  },
+  {
+   "word": "pêche,",
+   "start": 20,
+   "end": 20.31999969482422
+  },
+  {
+   "word": "que",
+   "start": 20.639999389648438,
+   "end": 20.670000076293945
+  },
+  {
+   "word": "danses",
+   "start": 20.670000076293945,
+   "end": 21.360000610351562
+  },
+  {
+   "word": "et",
+   "start": 21.360000610351562,
+   "end": 21.600000381469727
+  },
+  {
+   "word": "festins,",
+   "start": 21.600000381469727,
+   "end": 22.030000686645508
+  },
+  {
+   "word": "que",
+   "start": 22.239999771118164,
+   "end": 22.260000228881836
+  },
+  {
+   "word": "collations.",
+   "start": 22.260000228881836,
+   "end": 23.020000457763672
+  },
+  {
+   "word": "On",
+   "start": 23.360000610351562,
+   "end": 23.440000534057617
+  },
+  {
+   "word": "ne",
+   "start": 23.440000534057617,
+   "end": 23.600000381469727
+  },
+  {
+   "word": "dormait",
+   "start": 23.600000381469727,
+   "end": 23.920000076293945
+  },
+  {
+   "word": "point",
+   "start": 23.920000076293945,
+   "end": 24.229999542236328
+  },
+  {
+   "word": "et",
+   "start": 24.479999542236328,
+   "end": 24.5
+  },
+  {
+   "word": "on",
+   "start": 24.5,
+   "end": 24.719999313354492
+  },
+  {
+   "word": "passait",
+   "start": 24.719999313354492,
+   "end": 25.1200008392334
+  },
+  {
+   "word": "toute",
+   "start": 25.1200008392334,
+   "end": 25.360000610351562
+  },
+  {
+   "word": "la",
+   "start": 25.360000610351562,
+   "end": 25.520000457763672
+  },
+  {
+   "word": "nuit",
+   "start": 25.520000457763672,
+   "end": 25.84000015258789
+  },
+  {
+   "word": "à",
+   "start": 25.84000015258789,
+   "end": 25.920000076293945
+  },
+  {
+   "word": "se",
+   "start": 25.920000076293945,
+   "end": 26
+  },
+  {
+   "word": "faire",
+   "start": 26,
+   "end": 26.239999771118164
+  },
+  {
+   "word": "des",
+   "start": 26.239999771118164,
+   "end": 26.399999618530273
+  },
+  {
+   "word": "malices",
+   "start": 26.399999618530273,
+   "end": 26.799999237060547
+  },
+  {
+   "word": "les",
+   "start": 26.799999237060547,
+   "end": 26.8799991607666
+  },
+  {
+   "word": "uns",
+   "start": 26.8799991607666,
+   "end": 27.1200008392334
+  },
+  {
+   "word": "les",
+   "start": 27.1200008392334,
+   "end": 27.280000686645508
+  },
+  {
+   "word": "autres.",
+   "start": 27.280000686645508,
+   "end": 27.6200008392334
+  },
+  {
+   "word": "Enfin,",
+   "start": 28.399999618530273,
+   "end": 28.649999618530273
+  },
+  {
+   "word": "tout",
+   "start": 29.040000915527344,
+   "end": 29.280000686645508
+  },
+  {
+   "word": "alla",
+   "start": 29.280000686645508,
+   "end": 29.520000457763672
+  },
+  {
+   "word": "si",
+   "start": 29.520000457763672,
+   "end": 29.68000030517578
+  },
+  {
+   "word": "bien.",
+   "start": 29.68000030517578,
+   "end": 29.90999984741211
+  }
+ ]
+}

@@ -5,6 +5,7 @@ pub mod cli;
 pub mod compat;
 pub mod config;
 pub mod error;
+pub mod fsutil;
 pub mod media;
 pub mod output;
 pub mod paths;

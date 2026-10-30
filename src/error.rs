@@ -24,6 +24,9 @@ pub enum SrttyError {
     #[error("{0}")]
     Ffmpeg(String),
 
+    #[error("{0}")]
+    Network(String),
+
     #[error("interrupted")]
     Interrupted,
 
@@ -39,7 +42,9 @@ impl SrttyError {
             | SrttyError::Config(_)
             | SrttyError::Io(_)
             | SrttyError::CostNotConfirmed { .. } => 1,
-            SrttyError::UnusableModel { .. } | SrttyError::Transcribe(_) => 2,
+            SrttyError::UnusableModel { .. }
+            | SrttyError::Transcribe(_)
+            | SrttyError::Network(_) => 2,
             SrttyError::Ffmpeg(_) => 3,
             SrttyError::Interrupted => 130,
         }
@@ -61,6 +66,7 @@ mod tests {
             SrttyError::from(TranscribeError::Auth { status: 401 }).exit_code(),
             2
         );
+        assert_eq!(SrttyError::Network("x".into()).exit_code(), 2);
         assert_eq!(SrttyError::Ffmpeg("x".into()).exit_code(), 3);
         assert_eq!(SrttyError::Interrupted.exit_code(), 130);
         assert_eq!(

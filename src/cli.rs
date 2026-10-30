@@ -20,7 +20,7 @@ pub struct Cli {
     pub format: Vec<Format>,
 
     /// Provider name from the config file.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub provider: Option<String>,
 
     /// Transcription model.
@@ -56,7 +56,7 @@ pub struct Cli {
     pub yes: bool,
 
     /// Emit machine-readable JSON.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub json: bool,
 
     /// Suppress progress output.

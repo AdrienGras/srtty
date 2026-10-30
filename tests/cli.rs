@@ -245,3 +245,50 @@ async fn e2e_config_show_masks_the_key() {
     assert!(stdout.contains("***"));
     assert!(!stdout.contains(KEY) && !text(&out.stderr).contains(KEY));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_show_with_unset_key_prints_placeholder() {
+    let sb = Sandbox::new("http://127.0.0.1:9/v1", "some/model", 300.0);
+    let mut cmd = sb.cmd();
+    cmd.args(["config", "show"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let expected = format!("api_key = \"<unset: {KEY_ENV}>\"");
+    assert!(
+        text(&out.stdout).contains(&expected),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clap_error_with_json_prints_json() {
+    let sb = Sandbox::new("http://127.0.0.1:9/v1", "m", 300.0);
+    let mut cmd = sb.cmd_with_key();
+    cmd.args(["--json", "a.mp4", "--format", "both"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(1));
+    let err: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(err["exit_code"], 1);
+    let message = err["error"].as_str().unwrap();
+    assert!(
+        !message.is_empty() && !message.starts_with("error:"),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn help_with_json_is_not_an_error() {
+    let sb = Sandbox::new("http://127.0.0.1:9/v1", "m", 300.0);
+    let mut cmd = sb.cmd_with_key();
+    cmd.args(["--json", "--help"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(0));
+    let parsed: Result<serde_json::Value, _> = serde_json::from_slice(&out.stdout);
+    assert!(
+        parsed.map_or(true, |v| v.get("error").is_none()),
+        "{}",
+        text(&out.stdout)
+    );
+}

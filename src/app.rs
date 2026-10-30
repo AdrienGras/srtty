@@ -13,7 +13,7 @@ use crate::assemble::CueRules;
 use crate::cache::{CacheParams, ChunkCache};
 use crate::cli::{Cli, Command, ConfigAction};
 use crate::compat::{CompatEntry, CompatList, estimate_cost_usd, provider_key};
-use crate::config::{self, Config, ProviderKind, RequestMode, Resolved, SubtitleConfig};
+use crate::config::{self, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig};
 use crate::error::SrttyError;
 use crate::media::plan_chunks;
 use crate::output::speaker_prefix_reserve;
@@ -134,7 +134,8 @@ struct ConfigView<'a> {
     base_url: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key_env: Option<&'a str>,
-    api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
     model: &'a str,
     request_mode: RequestMode,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,7 +159,11 @@ fn show_config(cli: &Cli) -> Result<(), SrttyError> {
         kind: r.provider.kind,
         base_url: r.provider.base_url.as_deref(),
         api_key_env: r.provider.api_key_env.as_deref(),
-        api_key: r.api_key.to_string(),
+        api_key: match &r.api_key {
+            KeyState::Set(key) => Some(key.to_string()),
+            KeyState::Unset { var } => Some(format!("<unset: {var}>")),
+            KeyState::NotNeeded => None,
+        },
         model: &r.model,
         request_mode: r.provider.request_mode,
         language: r.language.as_deref(),
@@ -191,6 +196,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         SrttyError::Usage("no input file given; run `srtty --help` for usage".into())
     })?;
     let r = load_settings(&cli)?;
+    let api_key = r.require_key()?;
     if r.provider.kind == ProviderKind::Local {
         return Err(SrttyError::Config(
             "local backend is not available in this build".into(),
@@ -290,7 +296,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     };
     let transcriber = Arc::new(OpenAiCompatible::new(
         base_url,
-        r.api_key,
+        api_key,
         r.model,
         r.provider.request_mode,
     ));

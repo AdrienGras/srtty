@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::transcribe::openai::{host_of, is_openrouter};
 
+/// The only `compat.json` schema this build understands.
+pub const COMPAT_SCHEMA: u32 = 1;
+
 const EMBEDDED: &str = include_str!("../compat.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +49,7 @@ impl CompatList {
     pub fn load(cache_dir: &Path) -> Self {
         std::fs::read_to_string(cache_dir.join("compat.json"))
             .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
+            .and_then(|text| parse_compat(&text).ok())
             .unwrap_or_else(Self::embedded)
     }
 
@@ -55,6 +58,15 @@ impl CompatList {
             .iter()
             .find(|m| m.provider == provider && m.id == model)
     }
+}
+
+/// Parses a `compat.json` document, refusing any schema but `COMPAT_SCHEMA`.
+pub fn parse_compat(text: &str) -> Result<CompatList, String> {
+    let list: CompatList = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if list.schema != COMPAT_SCHEMA {
+        return Err(format!("unsupported compat.json schema {}", list.schema));
+    }
+    Ok(list)
 }
 
 /// Maps a base URL to the provider key used in the compatibility list.
@@ -153,5 +165,25 @@ mod tests {
         assert_eq!(provider_key("https://notopenrouter.ai/v1"), None);
         assert_eq!(provider_key("https://openrouter.ai.evil.com/v1"), None);
         assert_eq!(provider_key("not a url"), None);
+    }
+
+    #[test]
+    fn load_rejects_other_schemas() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("compat.json"),
+            r#"{"schema":2,"generated_at":"x","models":[]}"#,
+        )
+        .unwrap();
+        assert!(!CompatList::load(d.path()).models.is_empty());
+    }
+
+    #[test]
+    fn parse_compat_rejects_schema_2() {
+        let err = parse_compat(r#"{"schema":2,"generated_at":"x","models":[]}"#).unwrap_err();
+        assert_eq!(err, "unsupported compat.json schema 2");
+        let ok = parse_compat(r#"{"schema":1,"generated_at":"x","models":[]}"#).unwrap();
+        assert!(ok.models.is_empty());
+        assert!(parse_compat("{oops").is_err());
     }
 }

@@ -1,6 +1,7 @@
 pub mod app;
 pub mod assemble;
 pub mod cli;
+pub mod compat;
 pub mod config;
 pub mod error;
 pub mod media;

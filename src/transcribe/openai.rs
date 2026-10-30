@@ -240,11 +240,16 @@ fn transport_error(e: reqwest::Error) -> TranscribeError {
     }
 }
 
-/// True when the URL's host is `openrouter.ai` or one of its subdomains.
-pub fn is_openrouter(base_url: &str) -> bool {
+/// The host of `base_url`, or `None` when it is not a valid URL.
+pub(crate) fn host_of(base_url: &str) -> Option<String> {
     Url::parse(base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
+}
+
+/// True when the URL's host is `openrouter.ai` or one of its subdomains.
+pub fn is_openrouter(base_url: &str) -> bool {
+    host_of(base_url)
         .is_some_and(|host| host == "openrouter.ai" || host.ends_with(".openrouter.ai"))
 }
 

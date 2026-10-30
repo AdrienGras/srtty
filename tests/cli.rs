@@ -21,6 +21,13 @@ impl Sandbox {
     /// Writes a config whose only provider points at `base_url` with `model`,
     /// and generates a 27 s input: 8 s of tone, 1 s of silence, repeated.
     fn new(base_url: &str, model: &str, target_s: f64) -> Self {
+        let mut sb = Self::config_only(base_url, model, target_s);
+        sb.input = tone_mkv(sb.dir.path());
+        sb
+    }
+
+    /// Same config as `new`, without generating a media file (`input` is empty).
+    fn config_only(base_url: &str, model: &str, target_s: f64) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let config = format!(
             "default_provider = \"mock\"\n\
@@ -32,8 +39,10 @@ impl Sandbox {
              target_s = {target_s:.1}\n"
         );
         std::fs::write(dir.path().join("config.toml"), config).unwrap();
-        let input = tone_mkv(dir.path());
-        Self { dir, input }
+        Self {
+            dir,
+            input: PathBuf::new(),
+        }
     }
 
     /// The binary with the sandbox config and cache, and no API key.
@@ -291,4 +300,121 @@ async fn help_with_json_is_not_an_error() {
         "{}",
         text(&out.stdout)
     );
+}
+
+const COMPAT_BODY: &str = r#"{"schema":1,"generated_at":"2030-01-02","models":[]}"#;
+
+/// Serves `/v1/models` (two Whisper models) and `/compat.json`.
+async fn models_server(models_status: u16, compat_status: u16) -> MockServer {
+    let server = MockServer::start().await;
+    let listing = r#"{"data":[{"id":"whisper-1"},{"id":"whisper-large-v3"}]}"#;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(
+            ResponseTemplate::new(models_status).set_body_raw(listing, "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/compat.json"))
+        .respond_with(
+            ResponseTemplate::new(compat_status).set_body_raw(COMPAT_BODY, "application/json"),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A sandbox whose provider is `server`, and a `models` command that reads its compat list too.
+fn models_cmd(server: &MockServer, with_key: bool) -> (Sandbox, assert_cmd::Command) {
+    let sb = Sandbox::config_only(&format!("{}/v1", server.uri()), "m", 300.0);
+    let mut cmd = if with_key {
+        sb.cmd_with_key()
+    } else {
+        sb.cmd()
+    };
+    cmd.env("SRTTY_COMPAT_URL", format!("{}/compat.json", server.uri()));
+    (sb, cmd)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_lists_and_refreshes_cache() {
+    let server = models_server(200, 200).await;
+    let (sb, mut cmd) = models_cmd(&server, true);
+    cmd.arg("models");
+    let out = run(cmd).await;
+    let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stdout.starts_with("MODEL"), "{stdout}");
+    assert!(stdout.contains("whisper-1"), "{stdout}");
+    assert!(
+        stderr.contains("compatibility list: 2030-01-02 (remote)"),
+        "{stderr}"
+    );
+    assert!(sb.dir.path().join("cache/srtty/compat.json").exists());
+    assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_json_is_a_single_object() {
+    let server = models_server(200, 200).await;
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    cmd.args(["models", "--json"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(v["provider"], "mock");
+    assert_eq!(v["models"].as_array().unwrap().len(), 2);
+    assert_eq!(v["compat"]["source"], "remote");
+    assert_eq!(v["compat"]["generated_at"], "2030-01-02");
+    assert!(v["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(v["models"][0]["status"], "unknown");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_without_key_names_the_variable() {
+    let server = models_server(200, 200).await;
+    let (_sb, mut cmd) = models_cmd(&server, false);
+    cmd.arg("models");
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(text(&out.stderr).contains(KEY_ENV), "{}", text(&out.stderr));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_http_error_exits_2() {
+    let server = models_server(500, 200).await;
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    cmd.arg("models");
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", text(&out.stderr));
+
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    cmd.args(["models", "--json"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(2));
+    let err: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(err["exit_code"], 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_works_offline_with_compat_fallback() {
+    let server = models_server(200, 404).await;
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    cmd.arg("models");
+    let out = run(cmd).await;
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stderr.contains("could not refresh"), "{stderr}");
+    assert!(stderr.contains("(embedded)"), "{stderr}");
+    assert!(text(&out.stdout).contains("whisper-1"));
+
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    cmd.args(["models", "--json"]);
+    let out = run(cmd).await;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["compat"]["source"], "embedded");
+    assert_eq!(v["warnings"].as_array().unwrap().len(), 1);
 }

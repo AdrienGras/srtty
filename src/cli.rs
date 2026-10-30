@@ -78,6 +78,8 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// List the provider's transcription models with price and compatibility.
+    Models,
 }
 
 #[derive(Debug, Subcommand)]

@@ -127,7 +127,7 @@ pub enum CompatSource {
 }
 
 impl CompatSource {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             CompatSource::Remote => "remote",
             CompatSource::Cache => "cache",

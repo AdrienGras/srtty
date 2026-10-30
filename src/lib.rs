@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod fsutil;
 pub mod media;
+pub mod models;
 pub mod output;
 pub mod paths;
 pub mod providers;

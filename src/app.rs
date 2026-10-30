@@ -33,6 +33,7 @@ pub async fn main(cli: Cli) -> Result<(), SrttyError> {
         Some(Command::Config {
             action: ConfigAction::Show,
         }) => show_config(&cli),
+        Some(Command::Models) => crate::models::run(&cli).await,
         None => transcribe(cli).await,
     }
 }
@@ -183,7 +184,7 @@ fn show_config(cli: &Cli) -> Result<(), SrttyError> {
 }
 
 /// Writes `text` and a newline to stdout; a closed stdout is an I/O error, not a panic.
-fn print_stdout(text: &str) -> Result<(), SrttyError> {
+pub(crate) fn print_stdout(text: &str) -> Result<(), SrttyError> {
     let mut out = std::io::stdout().lock();
     writeln!(out, "{text}")?;
     out.flush()?;

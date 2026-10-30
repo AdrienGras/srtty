@@ -1,5 +1,6 @@
 //! Transcription domain types and the provider-facing trait.
 
+pub mod openai;
 pub mod parse;
 
 use std::path::PathBuf;

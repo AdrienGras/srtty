@@ -80,9 +80,12 @@ pub fn same_content(a: &CompatList, b: &CompatList) -> bool {
 /// What a request cost: the price the API reported when it is usable,
 /// otherwise the estimate.
 fn charged(reported: Option<f64>, estimate: f64) -> f64 {
-    reported
-        .filter(|c| c.is_finite() && *c >= 0.0)
-        .unwrap_or(estimate)
+    valid_cost(reported).unwrap_or(estimate)
+}
+
+/// A reported cost, if it is a usable amount.
+fn valid_cost(reported: Option<f64>) -> Option<f64> {
+    reported.filter(|c| c.is_finite() && *c >= 0.0)
 }
 
 /// Keeps the previous entry of `id`, if there was one, and says why.
@@ -156,8 +159,9 @@ pub async fn probe_all(
             Verdict::Incompatible => (CompatStatus::Incompatible, false, false),
         };
 
-        let mut diarization = old.and_then(|e| e.diarization.clone());
+        let mut diarization = None;
         if words {
+            diarization = old.and_then(|e| e.diarization.clone());
             // With several endpoints the answer would depend on the routing.
             if let Ok(tags) = prober.endpoint_tags(id).await
                 && let [tag] = tags.as_slice()
@@ -211,7 +215,9 @@ struct LiveProber {
     sample: SampleFile,
     speakers_sample: SampleFile,
     reporter: PlainReporter,
-    costs: Mutex<HashMap<String, f64>>,
+    /// Per model: the cost the API reported, and the seconds of audio sent
+    /// without a reported cost (billed at the estimate).
+    costs: Mutex<HashMap<String, (f64, f64)>>,
 }
 
 impl LiveProber {
@@ -224,16 +230,23 @@ impl LiveProber {
         )
     }
 
-    fn add_cost(&self, model: &str, cost: Option<f64>) {
-        if let Some(cost) = cost.filter(|c| c.is_finite()) {
-            let mut costs = self.costs.lock().unwrap_or_else(|p| p.into_inner());
-            *costs.entry(model.to_string()).or_default() += cost;
+    fn add_cost(&self, model: &str, cost: Option<f64>, sample_s: f64) {
+        let mut costs = self.costs.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = costs.entry(model.to_string()).or_default();
+        match valid_cost(cost) {
+            Some(usd) => entry.0 += usd,
+            None => entry.1 += sample_s,
         }
     }
 
-    fn cost_of(&self, model: &str) -> Option<f64> {
+    /// What `model` cost, and whether part of it is an estimate. Matches what
+    /// `probe_all` counted in `spent_usd`.
+    fn cost_of(&self, model: &str, usd_per_s: Option<f64>) -> Option<(f64, bool)> {
         let costs = self.costs.lock().unwrap_or_else(|p| p.into_inner());
-        costs.get(model).copied()
+        let (reported, unreported_s) = costs.get(model).copied()?;
+        let estimated = unreported_s > 0.0;
+        let estimate = usd_per_s.unwrap_or(0.0) * unreported_s;
+        Some((reported + estimate, estimated))
     }
 }
 
@@ -242,7 +255,7 @@ impl Prober for LiveProber {
     async fn probe(&self, model: &str) -> Result<ProbeOutcome, TranscribeError> {
         let t = self.transcriber(model);
         let outcome = probe_model(&t, &self.sample.chunk, &self.reporter).await?;
-        self.add_cost(model, outcome.cost_usd);
+        self.add_cost(model, outcome.cost_usd, SAMPLE_S);
         Ok(outcome)
     }
 
@@ -258,13 +271,18 @@ impl Prober for LiveProber {
         let t = self.transcriber(model);
         let result =
             probe_diarization(&t, &self.speakers_sample.chunk, option, &self.reporter).await?;
-        self.add_cost(model, result.1);
+        self.add_cost(model, result.1, SPEAKERS_SAMPLE_S);
         Ok(result)
     }
 }
 
 /// One stderr line for `id`: its new status or why it was kept.
-fn model_line(id: &str, new: &CompatList, report: &ProbeReport, cost: Option<f64>) -> String {
+fn model_line(
+    id: &str,
+    new: &CompatList,
+    report: &ProbeReport,
+    cost: Option<(f64, bool)>,
+) -> String {
     let outcome = match report.kept.iter().find(|(kept, _)| kept == id) {
         Some((_, why)) => format!("kept ({why})"),
         None => {
@@ -280,12 +298,31 @@ fn model_line(id: &str, new: &CompatList, report: &ProbeReport, cost: Option<f64
         }
     };
     match cost {
-        Some(usd) => format!("{id}: {outcome}, ${usd:.4}"),
+        Some((usd, estimated)) => {
+            let tilde = if estimated { "~" } else { "" };
+            format!("{id}: {outcome}, {tilde}${usd:.4}")
+        }
         None => format!("{id}: {outcome}"),
     }
 }
 
+/// Rejects limits a run cannot work with, before any request is made.
+fn check_limits(max_usd_per_s: f64, budget_usd: f64) -> Result<(), SrttyError> {
+    for (flag, value) in [
+        ("--max-usd-per-s", max_usd_per_s),
+        ("--budget-usd", budget_usd),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            return Err(SrttyError::Usage(format!(
+                "{flag} must be a finite, non-negative amount in USD"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub async fn run(args: &ProbeArgs) -> Result<(), SrttyError> {
+    check_limits(args.max_usd_per_s, args.budget_usd)?;
     check_key_var_name(&args.api_key_env)?;
     let key = std::env::var(&args.api_key_env)
         .ok()
@@ -299,6 +336,12 @@ pub async fn run(args: &ProbeArgs) -> Result<(), SrttyError> {
         })?;
 
     let listed = list_models(Listing::OpenRouter, &args.base_url, None).await?;
+    if listed.is_empty() {
+        // An empty listing would delist every OpenRouter entry.
+        return Err(SrttyError::Network(
+            "the OpenRouter model listing is empty; compat.json left unchanged".into(),
+        ));
+    }
     let previous = match std::fs::read_to_string(&args.output) {
         Ok(text) => parse_compat(&text)
             .map_err(|e| SrttyError::Config(format!("{}: {e}", args.output.display())))?,
@@ -331,7 +374,9 @@ pub async fn run(args: &ProbeArgs) -> Result<(), SrttyError> {
     ids.dedup();
     let mut err = std::io::stderr().lock();
     for id in ids {
-        writeln!(err, "{}", model_line(id, &new, &report, prober.cost_of(id)))?;
+        let rate = listed.iter().find(|m| m.id == id).and_then(|m| m.usd_per_s);
+        let cost = prober.cost_of(id, rate);
+        writeln!(err, "{}", model_line(id, &new, &report, cost))?;
     }
     writeln!(
         err,
@@ -708,7 +753,9 @@ mod tests {
         };
         let mut no_voices = old.clone();
         no_voices.id = "no/voices".into();
-        let previous = list(vec![old.clone(), no_voices]);
+        let mut no_tags = old.clone();
+        no_tags.id = "no/tags".into();
+        let previous = list(vec![old.clone(), no_voices, no_tags]);
         let models = [
             listed("keep/me", Some(0.0001)),
             listed("no/tags", Some(0.0001)),
@@ -721,7 +768,8 @@ mod tests {
         let by_id = |id: &str| new.models.iter().find(|m| m.id == id).unwrap();
         assert_eq!(by_id("keep/me").diarization, old.diarization);
         assert_eq!(by_id("no/voices").diarization, None);
-        assert_eq!(by_id("no/tags").diarization, None);
+        // endpoint_tags failed: the previous value stays.
+        assert_eq!(by_id("no/tags").diarization, old.diarization);
         assert!(
             !prober
                 .calls()
@@ -740,7 +788,12 @@ mod tests {
             tags: tag(&[("a/1", &["p"])]),
             ..Default::default()
         };
-        let previous = list(vec![entry("openrouter", "b/2", CompatStatus::Unusable)]);
+        let mut old_a = entry("openrouter", "a/1", CompatStatus::Compatible);
+        old_a.diarization = Some(json!({"p": {"diarize": true}}));
+        let previous = list(vec![
+            old_a.clone(),
+            entry("openrouter", "b/2", CompatStatus::Unusable),
+        ]);
         let models = [listed("a/1", Some(0.0001)), listed("b/2", Some(0.0001))];
         // The probe fits (0.003), the 45 s diarization (0.0045) does not.
         let policy = ProbePolicy {
@@ -753,8 +806,8 @@ mod tests {
         assert_eq!(prober.calls(), ["probe a/1", "tags a/1"]);
         assert!(report.budget_exhausted);
         assert_eq!(new.models[0].status, CompatStatus::Compatible);
-        assert_eq!(new.models[0].diarization, None);
-        assert_eq!(new.models[1], previous.models[0]);
+        assert_eq!(new.models[0].diarization, old_a.diarization);
+        assert_eq!(new.models[1], previous.models[1]);
         assert_eq!(report.kept, [("b/2".to_string(), "budget".to_string())]);
     }
 
@@ -773,6 +826,72 @@ mod tests {
             .map(|m| (m.provider.as_str(), m.id.as_str()))
             .collect();
         assert_eq!(ids, [("groq", "whisper-large-v3"), ("openai", "whisper-1")]);
+    }
+
+    #[tokio::test]
+    async fn diarization_is_dropped_when_words_are_gone() {
+        let mut old_unusable = entry("openrouter", "a/unusable", CompatStatus::Compatible);
+        old_unusable.diarization = Some(json!({"p": {"diarize": true}}));
+        let mut old_flat = old_unusable.clone();
+        old_flat.id = "b/flat".into();
+        let mut old_incompatible = old_unusable.clone();
+        old_incompatible.id = "c/incompatible".into();
+        let prober = FakeProber {
+            outcomes: HashMap::from([
+                ("a/unusable".into(), outcome(Verdict::Unusable)),
+                ("b/flat".into(), usable(false, true, None)),
+                ("c/incompatible".into(), outcome(Verdict::Incompatible)),
+            ]),
+            ..Default::default()
+        };
+        let previous = list(vec![old_unusable, old_flat, old_incompatible]);
+        let models = [
+            listed("a/unusable", Some(0.0001)),
+            listed("b/flat", Some(0.0001)),
+            listed("c/incompatible", Some(0.0001)),
+        ];
+        let (new, _) = probe_all(&models, &previous, &policy(), &prober)
+            .await
+            .unwrap();
+        assert_eq!(new.models.len(), 3);
+        assert!(new.models.iter().all(|m| m.diarization.is_none()));
+        assert!(
+            new.models
+                .iter()
+                .all(|m| m.checked_at.as_deref() == Some("2030-05-06"))
+        );
+    }
+
+    #[test]
+    fn limits_must_be_finite_and_non_negative() {
+        assert!(check_limits(0.001, 0.5).is_ok());
+        assert!(check_limits(0.0, 0.0).is_ok());
+        for (max, budget) in [
+            (f64::NAN, 0.5),
+            (0.001, f64::NAN),
+            (f64::INFINITY, 0.5),
+            (0.001, f64::INFINITY),
+            (-0.001, 0.5),
+            (0.001, -1.0),
+        ] {
+            let err = check_limits(max, budget).unwrap_err();
+            assert!(matches!(err, SrttyError::Usage(_)), "{max} {budget}");
+            assert_eq!(err.exit_code(), 1);
+        }
+    }
+
+    #[test]
+    fn model_line_marks_estimated_costs() {
+        let new = list(vec![]);
+        let report = ProbeReport::default();
+        assert_eq!(
+            model_line("m", &new, &report, Some((0.0015, true))),
+            "m: kept (no entry), ~$0.0015"
+        );
+        assert_eq!(
+            model_line("m", &new, &report, Some((0.0015, false))),
+            "m: kept (no entry), $0.0015"
+        );
     }
 
     #[test]

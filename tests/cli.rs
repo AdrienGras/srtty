@@ -460,7 +460,6 @@ async fn unchanged_content_is_not_rewritten() {
 
     let out = run(probe(&sb)).await;
     assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
-    eprintln!("probe stderr: {}", text(&out.stderr));
     let file = sb.dir.path().join("out.json");
     let first = std::fs::read_to_string(&file).unwrap();
     assert!(first.contains("m/one"), "{first}");
@@ -493,4 +492,27 @@ async fn unchanged_content_is_not_rewritten() {
         !help.lines().any(|l| l.trim_start().starts_with("compat")),
         "{help}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_listing_leaves_the_file_alone() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"data":[]}"#, "application/json"))
+        .mount(&server)
+        .await;
+    let sb = Sandbox::config_only("http://unused", "m", 300.0);
+    let file = sb.dir.path().join("out.json");
+    let before = r#"{"schema":1,"generated_at":"old","models":[{"provider":"openrouter","id":"x/y","status":"compatible","words":true,"fine_segments":true,"diarization":null,"usd_per_hour":1.0,"checked_at":"old"}]}"#;
+    std::fs::write(&file, before).unwrap();
+    let mut cmd = sb.cmd_with_key();
+    cmd.args(["compat", "probe", "--api-key-env", KEY_ENV, "--base-url"])
+        .arg(format!("{}/api/v1", server.uri()))
+        .args(["--output", "out.json"]);
+    let out = run(cmd).await;
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert!(stderr.contains("listing is empty"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
 }

@@ -104,12 +104,14 @@ fn keep(
     report.kept.push((model.id.clone(), why.to_string()));
 }
 
-/// Hourly price for a listed per-second price; `None` when the listing has
-/// no usable one (token-priced, negative or not finite).
+/// Hourly price for a listed per-second price, rounded to 6 decimals so the
+/// file holds clean values (0.1, not 0.10000000000008) that read back equal;
+/// `None` when the listing has no usable one (token-priced, negative or not
+/// finite).
 fn per_hour(usd_per_s: Option<f64>) -> Option<f64> {
     usd_per_s
         .filter(|p| p.is_finite() && *p >= 0.0)
-        .map(|p| p * 3600.0)
+        .map(|p| (p * 3600.0 * 1e6).round() / 1e6)
 }
 
 /// Fewest previously compatible models, probed conclusively, for the
@@ -253,7 +255,7 @@ pub async fn probe_all(
             words,
             fine_segments,
             diarization,
-            usd_per_hour: Some(rate * 3600.0),
+            usd_per_hour: per_hour(Some(rate)),
             checked_at: Some(policy.today.clone()),
         });
     }
@@ -553,7 +555,7 @@ mod tests {
     /// `e` at the hourly price of `usd_per_s`, as a kept entry is written.
     fn repriced(e: &CompatEntry, usd_per_s: Option<f64>) -> CompatEntry {
         CompatEntry {
-            usd_per_hour: usd_per_s.map(|p| p * 3600.0),
+            usd_per_hour: per_hour(usd_per_s),
             ..e.clone()
         }
     }
@@ -579,6 +581,34 @@ mod tests {
         tags.iter()
             .map(|(m, t)| (m.to_string(), t.iter().map(|s| s.to_string()).collect()))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn written_prices_survive_a_file_round_trip() {
+        let prober = FakeProber {
+            outcomes: HashMap::from([
+                ("a/grok".into(), outcome(Verdict::Incompatible)),
+                ("b/mid".into(), outcome(Verdict::Incompatible)),
+                ("c/cheap".into(), outcome(Verdict::Incompatible)),
+            ]),
+            ..Default::default()
+        };
+        let models = [
+            listed("a/grok", Some(0.0000277777777778)),
+            listed("b/mid", Some(0.000266666666667)),
+            listed("c/cheap", Some(0.00000333)),
+        ];
+        let (new, _) = probe_all(&models, &list(vec![]), &policy(), &prober)
+            .await
+            .unwrap();
+        assert_eq!(new.models[0].usd_per_hour, Some(0.1));
+        assert_eq!(new.models[1].usd_per_hour, Some(0.96));
+        assert_eq!(new.models[2].usd_per_hour, Some(0.011988));
+        // Serialized exactly as `run` writes it, then read back.
+        let mut text = serde_json::to_string_pretty(&new).unwrap();
+        text.push('\n');
+        let parsed = parse_compat(&text).unwrap();
+        assert!(same_content(&parsed, &new));
     }
 
     #[tokio::test]
@@ -1038,13 +1068,7 @@ mod tests {
         let prices: Vec<Option<f64>> = new.models.iter().map(|m| m.usd_per_hour).collect();
         assert_eq!(
             prices,
-            [
-                Some(0.002 * 3600.0),
-                None,
-                Some(0.0001 * 3600.0),
-                Some(0.0001 * 3600.0),
-                Some(0.0001 * 3600.0)
-            ]
+            [Some(7.2), None, Some(0.36), Some(0.36), Some(0.36)]
         );
         for (new, old) in new.models.iter().zip(&previous.models) {
             assert_eq!(

@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn fallback_rows_come_from_compat_json() {
-        let list = CompatList::embedded();
+        let list = crate::test_support::compat_seed();
         let r = fallback_rows(&list, "https://openrouter.ai/api/v1");
         let nova = r.iter().find(|m| m.id == "deepgram/nova-3").unwrap();
         assert_eq!(nova.usd_per_hour, Some(0.26));

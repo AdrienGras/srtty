@@ -260,8 +260,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_list_parses_and_knows_grok_diarization() {
-        let l = CompatList::embedded();
+    fn seed_list_knows_grok_diarization() {
+        let l = crate::test_support::compat_seed();
         let g = l.find("openrouter", "x-ai/grok-stt-1.0").unwrap();
         assert_eq!(g.status, CompatStatus::Compatible);
         assert_eq!(
@@ -301,15 +301,19 @@ mod tests {
 
     #[test]
     fn cost_estimate() {
-        let l = CompatList::embedded();
+        let l = crate::test_support::compat_seed();
         let e = l.find("openrouter", "x-ai/grok-stt-1.0");
         assert!((estimate_cost_usd(e, 1800.0).unwrap() - 0.05).abs() < 1e-9);
         assert_eq!(estimate_cost_usd(None, 1800.0), None);
     }
 
     #[test]
-    fn embedded_entries_have_unique_provider_and_id() {
+    fn embedded_list_is_well_formed() {
+        // `compat.json` is regenerated weekly: assert only properties that
+        // survive a regeneration, never specific models or prices.
         let l = CompatList::embedded();
+        assert_eq!(l.schema, COMPAT_SCHEMA);
+        assert!(!l.models.is_empty());
         let mut seen = std::collections::HashSet::new();
         for m in &l.models {
             assert!(
@@ -318,6 +322,22 @@ mod tests {
                 m.provider,
                 m.id
             );
+            if m.status == CompatStatus::Compatible {
+                assert!(
+                    m.words || m.fine_segments,
+                    "compatible entry {}/{} has neither words nor fine_segments",
+                    m.provider,
+                    m.id
+                );
+            }
+            if let Some(d) = &m.diarization {
+                assert!(
+                    d.is_object(),
+                    "diarization of {}/{} is not an object",
+                    m.provider,
+                    m.id
+                );
+            }
         }
     }
 
@@ -530,7 +550,7 @@ mod tests {
 
     #[test]
     fn status_mapping() {
-        let l = CompatList::embedded();
+        let l = crate::test_support::compat_seed();
         assert_eq!(
             status_of(l.find("openrouter", "x-ai/grok-stt-1.0")),
             ModelStatus::CompatibleSpeakers

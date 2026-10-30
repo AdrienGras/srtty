@@ -426,12 +426,11 @@ fn summary_line(s: &Summary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::CompatList;
     use clap::Parser;
 
     #[test]
     fn preflight_rules() {
-        let l = CompatList::embedded();
+        let l = crate::test_support::compat_seed();
         let grok = l.find("openrouter", "x-ai/grok-stt-1.0");
         let turbo = l.find("openrouter", "openai/whisper-large-v3-turbo");
         assert_eq!(

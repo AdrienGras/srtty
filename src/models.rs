@@ -315,7 +315,11 @@ mod tests {
 
     #[test]
     fn rows_merge_listing_and_compat_and_sort() {
-        let r = rows(&sample(), &CompatList::embedded(), Some("openrouter"));
+        let r = rows(
+            &sample(),
+            &crate::test_support::compat_seed(),
+            Some("openrouter"),
+        );
         let order: Vec<_> = r.iter().map(|m| (m.id.as_str(), m.status)).collect();
         assert_eq!(
             order,
@@ -342,14 +346,18 @@ mod tests {
             lm("a/unknown", Some(0.0002)),
             lm("d/unknown", Some(0.0001)),
         ];
-        let r = rows(&listed, &CompatList::embedded(), Some("openrouter"));
+        let r = rows(
+            &listed,
+            &crate::test_support::compat_seed(),
+            Some("openrouter"),
+        );
         let ids: Vec<_> = r.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["d/unknown", "a/unknown", "b/unknown", "c/unknown"]);
     }
 
     #[test]
     fn rows_without_a_provider_key_have_no_compat_data() {
-        let r = rows(&sample(), &CompatList::embedded(), None);
+        let r = rows(&sample(), &crate::test_support::compat_seed(), None);
         assert!(r.iter().all(|m| m.status == ModelStatus::Unknown));
         let grok = r.iter().find(|m| m.id == "x-ai/grok-stt-1.0").unwrap();
         assert_eq!(grok.usd_per_hour, None);
@@ -382,7 +390,11 @@ mod tests {
 
     #[test]
     fn table_puts_token_priced_models_last_with_their_url() {
-        let r = rows(&sample(), &CompatList::embedded(), Some("openrouter"));
+        let r = rows(
+            &sample(),
+            &crate::test_support::compat_seed(),
+            Some("openrouter"),
+        );
         let table = render_table(&r);
         let last = table.lines().last().unwrap();
         assert!(last.starts_with("google/gemini-3.5-transcribe"), "{last}");

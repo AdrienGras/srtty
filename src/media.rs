@@ -51,20 +51,21 @@ fn stderr_tail(stderr: &[u8]) -> String {
 }
 
 /// Run `bin` with `args`; return (stdout, stderr) on success, an `Ffmpeg` error otherwise.
+///
+/// On Unix the child leads its own process group, so a terminal Ctrl-C reaches
+/// only srtty, which cancels the run and kills the child through `kill_on_drop`.
 async fn run(bin: &str, args: &[&std::ffi::OsStr]) -> Result<(String, String), SrttyError> {
-    let out = Command::new(bin)
-        .args(args)
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                not_found()
-            } else {
-                SrttyError::Ffmpeg(format!("failed to run {bin}: {e}"))
-            }
-        })?;
+    let mut cmd = Command::new(bin);
+    cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let out = cmd.output().await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            not_found()
+        } else {
+            SrttyError::Ffmpeg(format!("failed to run {bin}: {e}"))
+        }
+    })?;
     if !out.status.success() {
         return Err(SrttyError::Ffmpeg(format!(
             "{bin} failed ({}): {}",
@@ -412,5 +413,17 @@ mod tests {
     #[test]
     fn ensure_ffmpeg_ok_on_this_machine() {
         ensure_ffmpeg().unwrap();
+    }
+
+    /// Children lead their own process group, so a terminal Ctrl-C reaches only srtty.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn children_run_in_their_own_process_group() {
+        let (stat, _) = run("cat", &["/proc/self/stat".as_ref()]).await.unwrap();
+        // Fields after the `(comm)` field: state, ppid, pgrp, ...
+        let pid: u32 = stat.split(' ').next().unwrap().parse().unwrap();
+        let after_comm = &stat[stat.rfind(')').unwrap() + 2..];
+        let pgrp: u32 = after_comm.split(' ').nth(2).unwrap().parse().unwrap();
+        assert_eq!(pgrp, pid);
     }
 }

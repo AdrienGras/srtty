@@ -54,7 +54,7 @@ struct RawUsage {
 /// A body holding an `error` object becomes a [`TranscribeError`]. Unknown
 /// fields are ignored.
 pub fn parse_verbose_json(v: &Value) -> Result<Transcript, TranscribeError> {
-    if let Some(err) = v.get("error") {
+    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
         let message = err
             .get("message")
             .and_then(Value::as_str)
@@ -162,6 +162,12 @@ mod tests {
             parse_verbose_json(&v),
             Err(TranscribeError::Fatal { .. })
         ));
+    }
+
+    #[test]
+    fn null_error_field_is_not_an_error() {
+        let v = serde_json::json!({"text": "hi", "error": null});
+        assert_eq!(parse_verbose_json(&v).unwrap().text, "hi");
     }
 
     #[test]

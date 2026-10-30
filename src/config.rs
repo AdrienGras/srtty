@@ -226,6 +226,17 @@ pub fn is_env_var_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Rejects an `api_key_env` that is not the name of an environment variable,
+/// for instance a pasted key. The value itself is never echoed.
+pub fn check_key_var_name(var: &str) -> Result<(), SrttyError> {
+    if looks_like_api_key(var) || !is_env_var_name(var) {
+        return Err(SrttyError::Config(
+            "`api_key_env` must be the name of an environment variable (e.g. OPENROUTER_API_KEY), not the key itself".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Merge settings. Precedence, lowest to highest: config file, environment
 /// (`SRTTY_PROVIDER`, `SRTTY_MODEL`, `SRTTY_LANGUAGE`), CLI flags.
 pub fn resolve(
@@ -272,11 +283,7 @@ pub fn resolve(
                     "provider `{provider_name}` has no `api_key_env` in the config file"
                 ))
             })?;
-            if looks_like_api_key(var) || !is_env_var_name(var) {
-                return Err(SrttyError::Config(
-                    "`api_key_env` must be the name of an environment variable (e.g. OPENROUTER_API_KEY), not the key itself".into(),
-                ));
-            }
+            check_key_var_name(var)?;
             match env_value(var) {
                 Some(value) => KeyState::Set(ApiKey(value)),
                 None => KeyState::Unset {

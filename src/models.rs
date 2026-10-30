@@ -12,7 +12,7 @@ use crate::compat::{
     CompatList, CompatSource, ModelStatus, REFRESH_TIMEOUT, compat_url, provider_key, refresh,
     status_of,
 };
-use crate::config::{ApiKey, Config, ProviderKind, is_env_var_name, looks_like_api_key};
+use crate::config::{ApiKey, Config, ProviderKind, check_key_var_name};
 use crate::error::SrttyError;
 use crate::paths;
 use crate::providers::{ListedModel, Listing, list_models, preset};
@@ -193,11 +193,7 @@ fn read_key(
     let Some(var) = target.api_key_env.as_deref() else {
         return Ok(None);
     };
-    if looks_like_api_key(var) || !is_env_var_name(var) {
-        return Err(SrttyError::Config(
-            "`api_key_env` must be the name of an environment variable (e.g. OPENROUTER_API_KEY), not the key itself".into(),
-        ));
-    }
+    check_key_var_name(var)?;
     match env(var).filter(|v| !v.is_empty()) {
         Some(value) => Ok(Some(ApiKey(value))),
         None if Listing::for_base_url(&target.base_url) == Listing::OpenAi => {

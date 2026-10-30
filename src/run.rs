@@ -577,6 +577,7 @@ mod tests {
                     max_duration_s: 7.0,
                     min_duration_s: 1.0,
                     pause_break_s: 0.8,
+                    first_line_reserve: 0,
                 },
                 speaker_label: "Speaker".into(),
                 cache: self.cache(),

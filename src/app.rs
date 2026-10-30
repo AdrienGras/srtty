@@ -16,6 +16,7 @@ use crate::compat::{CompatEntry, CompatList, estimate_cost_usd, provider_key};
 use crate::config::{self, Config, ProviderKind, RequestMode, Resolved, SubtitleConfig};
 use crate::error::SrttyError;
 use crate::media::plan_chunks;
+use crate::output::speaker_prefix_reserve;
 use crate::paths;
 use crate::report::{Event, PlainReporter, Reporter, Summary};
 use crate::run::{RunRequest, SILENCE_WINDOW_S, prepare, run};
@@ -93,6 +94,19 @@ fn load_settings(cli: &Cli) -> Result<Resolved, SrttyError> {
     let resolved = config::resolve(cfg, cli, &|name| std::env::var(name).ok())?;
     check_settings(&resolved)?;
     Ok(resolved)
+}
+
+/// Cue rules for a run. With `--speakers`, the first line of each cue keeps
+/// room for the SRT speaker prefix.
+fn cue_rules(subtitles: &SubtitleConfig, speakers: bool) -> CueRules {
+    CueRules {
+        first_line_reserve: if speakers {
+            speaker_prefix_reserve(&subtitles.speaker_label)
+        } else {
+            0
+        },
+        ..CueRules::from(subtitles)
+    }
 }
 
 fn check_settings(r: &Resolved) -> Result<(), SrttyError> {
@@ -262,7 +276,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         target_s: r.target_s,
         jobs: r.jobs,
         opts,
-        rules: CueRules::from(&r.subtitles),
+        rules: cue_rules(&r.subtitles, cli.speakers),
         speaker_label: r.subtitles.speaker_label.clone(),
         cache: ChunkCache::new(&cache_dir, !cli.no_cache),
         cache_params: CacheParams {
@@ -424,6 +438,15 @@ mod tests {
         let cli = Cli::try_parse_from(["srtty", "a.mp4"].iter().chain(flags)).unwrap();
         let r = config::resolve(cfg, &cli, &|k| (k == "K").then(|| "secret".into())).unwrap();
         check_settings(&r)
+    }
+
+    #[test]
+    fn speaker_prefix_is_reserved_only_with_speakers() {
+        let subtitles = SubtitleConfig::default();
+        assert_eq!(cue_rules(&subtitles, false).first_line_reserve, 0);
+        let with = cue_rules(&subtitles, true);
+        assert_eq!(with.first_line_reserve, 13);
+        assert_eq!(with.max_chars_per_line, 42);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use super::words::norm;
 use crate::config::SubtitleConfig;
 use crate::transcribe::Word;
 
-/// One subtitle: a time span, one or two lines of text and an optional speaker.
+/// One subtitle: a time span, up to `max_lines` lines of text and an optional speaker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cue {
     pub start: f64,
@@ -29,6 +29,9 @@ pub struct CueRules {
     pub max_duration_s: f64,
     pub min_duration_s: f64,
     pub pause_break_s: f64,
+    /// Characters the rendered first line holds before the text, such as the
+    /// SRT speaker prefix `[Speaker 1] `, taken from that line's budget.
+    pub first_line_reserve: usize,
 }
 
 impl From<&SubtitleConfig> for CueRules {
@@ -39,6 +42,7 @@ impl From<&SubtitleConfig> for CueRules {
             max_duration_s: c.max_duration_s,
             min_duration_s: 1.0,
             pause_break_s: 0.8,
+            first_line_reserve: 0,
         }
     }
 }
@@ -61,24 +65,53 @@ fn char_len(s: &str) -> usize {
     s.chars().count()
 }
 
-/// Splits `text` into two lines at the space that minimizes the longer line.
-/// A word longer than the line is never cut.
-fn wrap(text: String, max_chars: usize) -> Vec<String> {
-    if char_len(&text) <= max_chars {
-        return vec![text];
+/// Lays `words` out in the fewest lines possible, at most `rules.max_lines`,
+/// then balances those lines by minimizing the longest one. The first line
+/// also counts `rules.first_line_reserve` characters. A word is never cut: a
+/// line may exceed `max_chars_per_line` only when it holds a single word.
+/// `None` when the words cannot be laid out within the limits.
+fn layout(words: &[&str], rules: &CueRules) -> Option<Vec<String>> {
+    let n = words.len();
+    let lens: Vec<usize> = words.iter().map(|w| char_len(w)).collect();
+    // Width that a line made of `words[i..j]` weighs in the balance, or `None`
+    // when it does not fit. A lone overlong word fits and weighs nothing, so
+    // the other lines are still balanced.
+    let width = |i: usize, j: usize| {
+        let reserve = if i == 0 { rules.first_line_reserve } else { 0 };
+        let w = reserve + lens[i..j].iter().sum::<usize>() + (j - i - 1);
+        if w <= rules.max_chars_per_line {
+            Some(w)
+        } else {
+            (j - i == 1).then_some(0)
+        }
+    };
+    // best[l][i]: (longest line, end of the first line) for `words[i..]` in exactly `l` lines.
+    let mut best: Vec<Vec<Option<(usize, usize)>>> = vec![vec![None; n + 1]];
+    best[0][n] = Some((0, n));
+    for l in 1..=rules.max_lines.max(1) {
+        let row: Vec<Option<(usize, usize)>> = (0..=n)
+            .map(|i| {
+                (i + 1..=n)
+                    .filter_map(|j| {
+                        let (rest, _) = best[l - 1][j]?;
+                        Some((width(i, j)?.max(rest), j))
+                    })
+                    .min_by_key(|&(longest, _)| longest)
+            })
+            .collect();
+        best.push(row);
+        if best[l][0].is_some() {
+            let mut lines = Vec::with_capacity(l);
+            let mut i = 0;
+            for k in (1..=l).rev() {
+                let (_, j) = best[k][i]?;
+                lines.push(words[i..j].join(" "));
+                i = j;
+            }
+            return Some(lines);
+        }
     }
-    let best = text
-        .char_indices()
-        .filter(|&(_, c)| c == ' ')
-        .map(|(i, _)| {
-            let longest = char_len(&text[..i]).max(char_len(&text[i + 1..]));
-            (longest, i)
-        })
-        .min_by_key(|&(longest, _)| longest);
-    match best {
-        Some((_, i)) => vec![text[..i].to_string(), text[i + 1..].to_string()],
-        None => vec![text],
-    }
+    None
 }
 
 /// Closes the words of one cue into a `Cue`; `next_start` bounds the minimum-duration extension.
@@ -89,22 +122,19 @@ fn close_cue(words: &[Word], next_start: Option<f64>, rules: &CueRules) -> Cue {
         let target = start + rules.min_duration_s;
         end = end.max(next_start.map_or(target, |n| target.min(n)));
     }
-    let text = words
-        .iter()
-        .map(|w| w.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
     Cue {
         start,
         end,
-        lines: wrap(text, rules.max_chars_per_line),
+        // Every cue was grown only while its words could be laid out.
+        lines: layout(&texts, rules).unwrap_or_else(|| vec![texts.join(" ")]),
         speaker: words[0].speaker,
     }
 }
 
 /// Groups words into cues following `rules`.
 pub fn build_cues(words: &[Word], rules: &CueRules) -> Vec<Cue> {
-    let max_len = rules.max_chars_per_line * rules.max_lines;
+    let texts: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
     let mut cues = Vec::new();
     let mut from = 0;
     let mut len = 0;
@@ -112,11 +142,10 @@ pub fn build_cues(words: &[Word], rules: &CueRules) -> Vec<Cue> {
         if i > from {
             let first = &words[from];
             let prev = &words[i - 1];
-            let w_len = char_len(&w.text);
             if w.speaker != first.speaker
                 || w.start - prev.end >= rules.pause_break_s
-                || len + 1 + w_len > max_len
                 || w.end - first.start > rules.max_duration_s
+                || layout(&texts[from..=i], rules).is_none()
             {
                 cues.push(close_cue(&words[from..i], Some(w.start), rules));
                 from = i;
@@ -186,7 +215,67 @@ mod tests {
             max_duration_s: 7.0,
             min_duration_s: 1.0,
             pause_break_s: 0.8,
+            first_line_reserve: 0,
         }
+    }
+
+    /// Words of the given lengths, 0.2 s apart, with no punctuation.
+    fn words_of(lens: &[usize]) -> Vec<Word> {
+        lens.iter()
+            .enumerate()
+            .map(|(i, &n)| {
+                let letter = (b'a' + i as u8) as char;
+                w(
+                    &letter.to_string().repeat(n),
+                    i as f64 * 0.2,
+                    i as f64 * 0.2 + 0.15,
+                )
+            })
+            .collect()
+    }
+
+    fn widths(c: &Cue) -> Vec<usize> {
+        c.lines.iter().map(|l| l.chars().count()).collect()
+    }
+
+    #[test]
+    fn closes_cue_before_a_word_that_cannot_be_wrapped_within_limits() {
+        let c = build_cues(&words_of(&[30, 30, 22]), &rules());
+        assert!(c.iter().all(|c| c.lines.len() <= 2), "{c:?}");
+        assert!(
+            c.iter().all(|c| widths(c).iter().all(|&n| n <= 42)),
+            "{c:?}"
+        );
+        assert_eq!(c.iter().map(|c| c.lines.len()).sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn wraps_into_up_to_max_lines_balanced_lines() {
+        let c = build_cues(
+            &words_of(&[4, 4, 4, 4, 4, 4]),
+            &CueRules {
+                max_chars_per_line: 10,
+                max_lines: 3,
+                ..rules()
+            },
+        );
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].lines, ["aaaa bbbb", "cccc dddd", "eeee ffff"]);
+    }
+
+    #[test]
+    fn first_line_reserve_shortens_the_first_line() {
+        let r = CueRules {
+            first_line_reserve: 12,
+            ..rules()
+        };
+        let c = build_cues(&words_of(&[5; 12]), &r);
+        for cue in &c {
+            let n = widths(cue);
+            assert!(n[0] <= 30, "{cue:?}");
+            assert!(n.iter().all(|&n| n <= 42) && n.len() <= 2, "{cue:?}");
+        }
+        assert_eq!(c[0].lines.len(), 2);
     }
 
     #[test]

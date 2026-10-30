@@ -58,6 +58,12 @@ pub fn render(format: Format, cues: &[Cue], speaker_label: &str) -> String {
     }
 }
 
+/// Characters the SRT speaker prefix `[{label} {n}] ` takes, counting two
+/// digits for `n`. Cue building reserves them on the first line.
+pub fn speaker_prefix_reserve(speaker_label: &str) -> usize {
+    speaker_label.chars().count() + 4 + 2
+}
+
 fn render_srt(cues: &[Cue], speaker_label: &str) -> String {
     let mut out = String::new();
     let mut previous: Option<u32> = None;
@@ -254,6 +260,21 @@ mod tests {
         assert_eq!(
             s,
             "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<v Q&amp;A &lt;x&gt; 1>R&amp;D &lt;3 --&gt; ok\na&gt;b\n\n"
+        );
+    }
+
+    #[test]
+    fn speaker_prefix_reserve_covers_two_digit_speakers() {
+        assert_eq!(speaker_prefix_reserve("Speaker"), 13);
+        let s = render(
+            Format::Srt,
+            &[cue(0.0, 1.0, &["x"], Some(99))],
+            "Intervenant",
+        );
+        let prefix = s.lines().nth(2).unwrap().strip_suffix('x').unwrap();
+        assert_eq!(
+            prefix.chars().count(),
+            speaker_prefix_reserve("Intervenant")
         );
     }
 

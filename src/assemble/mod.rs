@@ -51,6 +51,7 @@ mod tests {
             max_duration_s: 7.0,
             min_duration_s: 1.0,
             pause_break_s: 0.8,
+            first_line_reserve: 0,
         }
     }
 
@@ -95,5 +96,44 @@ mod tests {
             c.windows(2)
                 .all(|p| p[0].start < p[1].start && p[0].end <= p[1].start + 1e-6)
         );
+    }
+
+    fn fixture_cues(name: &str, rules: &CueRules) -> Vec<Cue> {
+        let t = crate::transcribe::parse::parse_verbose_json(&fx(name)).unwrap();
+        assemble(&[(0.0, t)], rules)
+    }
+
+    #[test]
+    fn real_fixtures_keep_every_line_within_limits() {
+        for name in [
+            "whisper1",
+            "deepgram",
+            "grok_diar",
+            "whisper_turbo",
+            "scribe",
+            "fish",
+        ] {
+            for c in fixture_cues(name, &rules()) {
+                assert!(c.lines.len() <= 2, "{name}: {c:?}");
+                assert!(
+                    c.lines.iter().all(|l| l.chars().count() <= 42),
+                    "{name}: {c:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_diarized_srt_lines_fit_with_speaker_prefix() {
+        let rules = CueRules {
+            first_line_reserve: crate::output::speaker_prefix_reserve("Speaker"),
+            ..rules()
+        };
+        let cues = fixture_cues("grok_diar", &rules);
+        assert!(cues.iter().any(|c| c.speaker.is_some()));
+        let srt = crate::output::render(crate::output::Format::Srt, &cues, "Speaker");
+        for line in srt.lines().filter(|l| !l.contains(" --> ")) {
+            assert!(line.chars().count() <= 42, "{line}");
+        }
     }
 }

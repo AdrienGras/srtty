@@ -80,6 +80,8 @@ pub enum Command {
     },
     /// List the provider's transcription models with price and compatibility.
     Models,
+    /// Configure srtty interactively.
+    Setup,
     /// Maintainer tools for compat.json.
     #[command(hide = true)]
     Compat {

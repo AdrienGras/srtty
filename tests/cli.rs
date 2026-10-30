@@ -516,3 +516,34 @@ async fn empty_listing_leaves_the_file_alone() {
     assert!(stderr.contains("listing is empty"), "{stderr}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_requires_a_terminal() {
+    let sb = Sandbox::config_only("http://127.0.0.1:9/v1", "m", 300.0);
+    let mut cmd = sb.cmd();
+    cmd.arg("setup").write_stdin("");
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("interactive"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(out.stdout.is_empty(), "{}", text(&out.stdout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_with_json_prints_json_error() {
+    let sb = Sandbox::config_only("http://127.0.0.1:9/v1", "m", 300.0);
+    let mut cmd = sb.cmd();
+    cmd.args(["setup", "--json"]).write_stdin("");
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(1));
+    let err: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(err["exit_code"], 1);
+    assert!(
+        err["error"].as_str().unwrap().contains("interactive"),
+        "{err}"
+    );
+}

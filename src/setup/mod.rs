@@ -1,1 +1,1055 @@
+//! `srtty setup`: choose a provider, the variable holding its key and a model,
+//! optionally test the model on a short sample, then write the config file.
+
+pub mod prompt;
 pub mod write;
+
+use std::path::PathBuf;
+
+use async_trait::async_trait;
+
+use crate::compat::{CompatList, ModelStatus, REFRESH_TIMEOUT, provider_key, refresh};
+use crate::config::{ApiKey, RequestMode, is_env_var_name, looks_like_api_key};
+use crate::error::SrttyError;
+use crate::models::{ModelRow, Target, fetch_rows, rows};
+use crate::probe::{ProbeOutcome, SAMPLE, SAMPLE_S, Verdict, probe_model, write_sample};
+use crate::providers::{ListedModel, Listing, PRESETS};
+use crate::report::PlainReporter;
+use crate::transcribe::TranscribeError;
+use crate::transcribe::openai::OpenAiCompatible;
+
+pub use prompt::{InquirePrompter, Prompter};
+use write::{ProviderChoice, apply, write_config};
+
+/// Runs the paid sample test of a model.
+#[async_trait]
+pub trait SampleTester: Send + Sync {
+    async fn test(
+        &self,
+        base_url: &str,
+        key: &ApiKey,
+        model: &str,
+    ) -> Result<ProbeOutcome, TranscribeError>;
+}
+
+/// Transcribes the embedded 30 s sample with the provider.
+pub struct LiveTester;
+
+#[async_trait]
+impl SampleTester for LiveTester {
+    async fn test(
+        &self,
+        base_url: &str,
+        key: &ApiKey,
+        model: &str,
+    ) -> Result<ProbeOutcome, TranscribeError> {
+        let sample = write_sample(SAMPLE, SAMPLE_S).map_err(|e| TranscribeError::Fatal {
+            status: None,
+            message: format!("cannot write the sample: {e}"),
+        })?;
+        let t = OpenAiCompatible::new(
+            base_url.to_string(),
+            key.clone(),
+            model.to_string(),
+            RequestMode::Multipart,
+        );
+        let reporter = PlainReporter::new(Box::new(std::io::stderr()));
+        probe_model(&t, &sample.chunk, &reporter).await
+    }
+}
+
+/// Where `setup` reads and writes, and how it reaches the outside world.
+pub struct SetupContext<'a> {
+    pub config_path: PathBuf,
+    pub cache_dir: PathBuf,
+    pub compat_url: String,
+    pub env: &'a dyn Fn(&str) -> Option<String>,
+    pub tester: &'a dyn SampleTester,
+}
+
+/// Outcome of `setup`: whether the config file was written, and its path.
+#[derive(Debug)]
+pub struct SetupDone {
+    pub written: bool,
+    pub path: PathBuf,
+}
+
+const CUSTOM: &str = "Custom OpenAI-compatible URL";
+const LOCAL_WHISPER: &str = "Local Whisper (not available in this build)";
+const SHOW_INCOMPATIBLE: &str = "Show incompatible models";
+const ENTER_MODEL_ID: &str = "Enter a model id";
+
+/// Asks for a provider, its key variable and a model, offers a paid test of
+/// the model, then writes the config file. Prompts block: nothing else runs
+/// while `setup` waits for an answer.
+pub async fn run_setup(
+    p: &mut dyn Prompter,
+    ctx: &SetupContext<'_>,
+) -> Result<SetupDone, SrttyError> {
+    let (name, base_url, default_var) = choose_provider(p)?;
+    let var = p.text(
+        "Environment variable holding the API key:",
+        default_var,
+        &validate_var_name,
+    )?;
+    let key = (ctx.env)(&var).filter(|v| !v.is_empty()).map(ApiKey);
+    if key.is_some() {
+        p.say(&format!("✔ {var} is set"));
+    } else {
+        p.say(&format!(
+            "! {var} is not set. Export it before running srtty."
+        ));
+    }
+
+    let refreshed = refresh(&ctx.cache_dir, &ctx.compat_url, REFRESH_TIMEOUT).await;
+    if let Some(warning) = &refreshed.warning {
+        p.say(warning);
+    }
+    let target = Target {
+        name: name.clone(),
+        base_url: base_url.clone(),
+        api_key_env: Some(var.clone()),
+    };
+    let listed = if key.is_none() && Listing::for_base_url(&base_url) == Listing::OpenAi {
+        Err(format!("{var} is not set"))
+    } else {
+        fetch_rows(&target, key.as_ref(), &refreshed.list)
+            .await
+            .map_err(|e| e.to_string())
+    };
+    let rows = listed.unwrap_or_else(|cause| {
+        p.say(&format!("! Could not list models: {cause}"));
+        fallback_rows(&refreshed.list, &base_url)
+    });
+
+    let model = choose_model(p, ctx, &rows, &base_url, &var, key.as_ref()).await?;
+    finish(
+        p,
+        ctx,
+        &ProviderChoice {
+            name,
+            base_url,
+            api_key_env: var,
+            model,
+        },
+    )
+}
+
+/// Provider name, base URL and the suggested key variable.
+fn choose_provider(
+    p: &mut dyn Prompter,
+) -> Result<(String, String, Option<&'static str>), SrttyError> {
+    let mut options: Vec<String> = PRESETS.iter().map(|pr| pr.label.to_string()).collect();
+    options.push(CUSTOM.to_string());
+    options.push(LOCAL_WHISPER.to_string());
+    loop {
+        let i = p.select("Which transcription provider?", &options)?;
+        if let Some(pr) = PRESETS.get(i) {
+            return Ok((
+                pr.key.to_string(),
+                pr.base_url.to_string(),
+                Some(pr.api_key_env),
+            ));
+        }
+        if options[i] == LOCAL_WHISPER {
+            p.say(
+                "Local Whisper needs a build with the `local` feature: cargo install srtty --features local",
+            );
+            continue;
+        }
+        let name = p.text(
+            "Provider name (used in the config file):",
+            Some("custom"),
+            &validate_provider_name,
+        )?;
+        let base_url = p.text(
+            "Base URL (e.g. http://localhost:8000/v1):",
+            None,
+            &validate_base_url,
+        )?;
+        return Ok((name, base_url.trim().to_string(), None));
+    }
+}
+
+/// The validators never quote the input: it may be a pasted key.
+fn validate_var_name(input: &str) -> Result<(), String> {
+    if looks_like_api_key(input) {
+        return Err("That looks like an API key. Enter the name of the variable that holds it, e.g. OPENROUTER_API_KEY.".into());
+    }
+    if !is_env_var_name(input) {
+        return Err("Use letters, digits and underscores, e.g. OPENROUTER_API_KEY.".into());
+    }
+    Ok(())
+}
+
+fn validate_provider_name(input: &str) -> Result<(), String> {
+    let ok = !input.is_empty()
+        && input
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err("Use lowercase letters, digits, '-' and '_', e.g. custom.".into())
+    }
+}
+
+fn validate_base_url(input: &str) -> Result<(), String> {
+    let input = input.trim();
+    let valid = (input.starts_with("http://") || input.starts_with("https://"))
+        && reqwest::Url::parse(input).is_ok_and(|u| u.host_str().is_some_and(|h| !h.is_empty()));
+    if valid {
+        Ok(())
+    } else {
+        Err("Enter a URL starting with http:// or https://, e.g. http://localhost:8000/v1.".into())
+    }
+}
+
+fn validate_model_id(input: &str) -> Result<(), String> {
+    if input.trim().is_empty() {
+        Err("Enter a model id.".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Asks for a model until one is kept. With a key, offers the paid test first.
+async fn choose_model(
+    p: &mut dyn Prompter,
+    ctx: &SetupContext<'_>,
+    rows: &[ModelRow],
+    base_url: &str,
+    var: &str,
+    key: Option<&ApiKey>,
+) -> Result<String, SrttyError> {
+    let mut show_all = false;
+    loop {
+        let menu = model_menu(rows, show_all);
+        let i = p.select("Model:", &menu.options)?;
+        let row = menu.rows.get(i).copied();
+        let id = match row {
+            Some(row) => {
+                if row.status == ModelStatus::Incompatible
+                    && !p.confirm(
+                        &format!("{} is marked incompatible. Use it anyway?", row.id),
+                        false,
+                    )?
+                {
+                    continue;
+                }
+                row.id.clone()
+            }
+            None if menu.has_hidden && i == menu.rows.len() => {
+                show_all = true;
+                continue;
+            }
+            None => p
+                .text("Model id:", None, &validate_model_id)?
+                .trim()
+                .to_string(),
+        };
+        let Some(key) = key else {
+            return Ok(id);
+        };
+        if !p.confirm(&test_question(&id, row), false)? {
+            return Ok(id);
+        }
+        let usable = match ctx.tester.test(base_url, key, &id).await {
+            Ok(outcome) => {
+                let (line, usable) = match &outcome.verdict {
+                    Verdict::Usable { words: true, .. } => (
+                        "✔ Test passed: word timestamps available.".to_string(),
+                        true,
+                    ),
+                    Verdict::Usable { words: false, .. } => (
+                        "✔ Test passed: fine segments, no word timestamps.".to_string(),
+                        true,
+                    ),
+                    Verdict::Unusable | Verdict::Incompatible => {
+                        ("✘ This model cannot produce subtitles.".to_string(), false)
+                    }
+                    Verdict::Inconclusive(m) => (format!("! Test inconclusive: {m}"), true),
+                };
+                let cost = outcome
+                    .cost_usd
+                    .map(|usd| format!(" (cost ${usd:.4})"))
+                    .unwrap_or_default();
+                p.say(&format!("{line}{cost}"));
+                usable
+            }
+            Err(TranscribeError::Auth { .. }) => {
+                p.say(&format!("✘ Authentication failed; check {var}."));
+                true
+            }
+            Err(e) => {
+                p.say(&format!("! Test inconclusive: {e}"));
+                true
+            }
+        };
+        if usable || p.confirm(&format!("Keep {id} anyway?"), false)? {
+            return Ok(id);
+        }
+    }
+}
+
+/// The confirmation that guards the paid test, with its estimated cost.
+fn test_question(id: &str, row: Option<&ModelRow>) -> String {
+    let cost = match row {
+        Some(ModelRow {
+            usd_per_hour: Some(usd),
+            ..
+        }) => format!("${:.4}.", usd * SAMPLE_S / 3600.0),
+        Some(ModelRow {
+            token_priced: true,
+            url: Some(url),
+            ..
+        }) => format!("unknown (billed per token, see {url})."),
+        _ => "unknown.".to_string(),
+    };
+    format!("Test {id} on a {SAMPLE_S} s sample? Estimated cost: {cost}")
+}
+
+/// Writes the config file, asking first when one exists.
+fn finish(
+    p: &mut dyn Prompter,
+    ctx: &SetupContext<'_>,
+    choice: &ProviderChoice,
+) -> Result<SetupDone, SrttyError> {
+    let path = &ctx.config_path;
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(SrttyError::Config(format!(
+                "cannot read {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    let text = apply(existing.as_deref(), choice)?;
+    if existing.is_some()
+        && !p.confirm(
+            &format!(
+                "Update {}? This sets default_provider = \"{}\" and replaces [providers.{}].",
+                path.display(),
+                choice.name,
+                choice.name
+            ),
+            false,
+        )?
+    {
+        p.say("Nothing written.");
+        return Ok(SetupDone {
+            written: false,
+            path: path.clone(),
+        });
+    }
+    write_config(path, &text)?;
+    p.say(&format!("Wrote {}.", path.display()));
+    p.say("Next: srtty <video-or-audio-file>");
+    Ok(SetupDone {
+        written: true,
+        path: path.clone(),
+    })
+}
+
+/// The model choices: rows (incompatible ones only with `show_all`), then the
+/// extra entries. `rows[i]` is the row of `options[i]`.
+struct ModelMenu<'r> {
+    rows: Vec<&'r ModelRow>,
+    options: Vec<String>,
+    has_hidden: bool,
+}
+
+fn model_menu(rows: &[ModelRow], show_all: bool) -> ModelMenu<'_> {
+    let visible: Vec<&ModelRow> = rows
+        .iter()
+        .filter(|r| show_all || r.status != ModelStatus::Incompatible)
+        .collect();
+    let has_hidden = visible.len() < rows.len();
+    let mut options: Vec<String> = visible.iter().map(|r| model_label(r)).collect();
+    if has_hidden {
+        options.push(SHOW_INCOMPATIBLE.to_string());
+    }
+    options.push(ENTER_MODEL_ID.to_string());
+    ModelMenu {
+        rows: visible,
+        options,
+        has_hidden,
+    }
+}
+
+fn model_label(row: &ModelRow) -> String {
+    let price = match (row.usd_per_hour, &row.url) {
+        (Some(usd), _) => format!("${usd:.2}/h"),
+        (None, Some(url)) if row.token_priced => format!("billed per token, see {url}"),
+        (None, _) if row.token_priced => "billed per token".to_string(),
+        (None, _) => "price unknown".to_string(),
+    };
+    format!("{}  {price}  {}", row.id, row.status.label())
+}
+
+/// The provider's models as `compat.json` knows them, for when the listing fails.
+fn fallback_rows(list: &CompatList, base_url: &str) -> Vec<ModelRow> {
+    let Some(provider) = provider_key(base_url) else {
+        return Vec::new();
+    };
+    let listed: Vec<ListedModel> = list
+        .models
+        .iter()
+        .filter(|e| e.provider == provider)
+        .map(|e| ListedModel {
+            id: e.id.clone(),
+            usd_per_s: None,
+            token_priced: false,
+            url: None,
+        })
+        .collect();
+    rows(&listed, list, Some(provider))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use clap::Parser;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+    use crate::cli::Cli;
+    use crate::compat::ModelStatus;
+    use crate::config::{self, Config};
+    use crate::probe::Verdict;
+
+    #[derive(Debug)]
+    enum Answer {
+        Select(usize),
+        Text(String),
+        Confirm(bool),
+    }
+
+    fn text(s: &str) -> Answer {
+        Answer::Text(s.to_string())
+    }
+
+    /// Replays scripted answers and records everything shown to the user.
+    #[derive(Default)]
+    struct ScriptedPrompter {
+        script: VecDeque<Answer>,
+        /// Every prompt message, option and `say` line, in order.
+        shown: Vec<String>,
+        /// Prompt messages only.
+        prompts: Vec<String>,
+        /// Options of each `select`, in order.
+        options: Vec<Vec<String>>,
+        said: Vec<String>,
+        validator_errors: Vec<String>,
+    }
+
+    impl ScriptedPrompter {
+        fn new(script: Vec<Answer>) -> Self {
+            Self {
+                script: script.into(),
+                ..Default::default()
+            }
+        }
+
+        fn next(&mut self, message: &str) -> Answer {
+            self.script
+                .pop_front()
+                .unwrap_or_else(|| panic!("script exhausted at prompt {message:?}"))
+        }
+
+        fn asked(&self, message: &str) -> usize {
+            self.prompts.iter().filter(|m| *m == message).count()
+        }
+
+        fn everything(&self) -> String {
+            let mut all = self.shown.clone();
+            all.extend(self.validator_errors.iter().cloned());
+            all.join("\n")
+        }
+    }
+
+    impl Prompter for ScriptedPrompter {
+        fn select(&mut self, message: &str, options: &[String]) -> Result<usize, SrttyError> {
+            self.prompts.push(message.to_string());
+            self.shown.push(message.to_string());
+            self.shown.extend(options.iter().cloned());
+            self.options.push(options.to_vec());
+            match self.next(message) {
+                Answer::Select(i) => {
+                    assert!(
+                        i < options.len(),
+                        "scripted index {i} out of range for {message:?}: {options:?}"
+                    );
+                    Ok(i)
+                }
+                other => panic!("expected a Select answer for {message:?}, script has {other:?}"),
+            }
+        }
+
+        fn text(
+            &mut self,
+            message: &str,
+            default: Option<&str>,
+            validate: &dyn Fn(&str) -> Result<(), String>,
+        ) -> Result<String, SrttyError> {
+            self.prompts.push(message.to_string());
+            self.shown.push(message.to_string());
+            loop {
+                let input = match self.next(message) {
+                    Answer::Text(s) => s,
+                    other => {
+                        panic!("expected a Text answer for {message:?}, script has {other:?}")
+                    }
+                };
+                let input = match default {
+                    Some(d) if input.is_empty() => d.to_string(),
+                    _ => input,
+                };
+                match validate(&input) {
+                    Ok(()) => return Ok(input),
+                    // Like a terminal prompt: show the error and ask again.
+                    Err(e) => self.validator_errors.push(e),
+                }
+            }
+        }
+
+        fn confirm(&mut self, message: &str, _default: bool) -> Result<bool, SrttyError> {
+            self.prompts.push(message.to_string());
+            self.shown.push(message.to_string());
+            match self.next(message) {
+                Answer::Confirm(b) => Ok(b),
+                other => {
+                    panic!("expected a Confirm answer for {message:?}, script has {other:?}")
+                }
+            }
+        }
+
+        fn say(&mut self, line: &str) {
+            self.shown.push(line.to_string());
+            self.said.push(line.to_string());
+        }
+    }
+
+    /// Answers every test with `verdict` and counts its calls.
+    struct FakeTester {
+        calls: AtomicUsize,
+        verdict: Verdict,
+    }
+
+    impl FakeTester {
+        fn new(verdict: Verdict) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                verdict,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl SampleTester for FakeTester {
+        async fn test(
+            &self,
+            _base_url: &str,
+            _key: &ApiKey,
+            _model: &str,
+        ) -> Result<ProbeOutcome, TranscribeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ProbeOutcome {
+                verdict: self.verdict.clone(),
+                cost_usd: Some(0.0008),
+            })
+        }
+    }
+
+    fn usable() -> Verdict {
+        Verdict::Usable {
+            words: true,
+            fine_segments: true,
+        }
+    }
+
+    const KEY_VALUE: &str = "test-key-value-77";
+    const COMPAT_BODY: &str = r#"{"schema":1,"generated_at":"2030-01-02","models":[]}"#;
+
+    /// Serves `/v1/models` (two Whisper models) with `models_status`, and `/compat.json`.
+    async fn server(models_status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        let listing = r#"{"data":[{"id":"whisper-1"},{"id":"whisper-large-v3"}]}"#;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(models_status).set_body_raw(listing, "application/json"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/compat.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(COMPAT_BODY, "application/json"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// `K` holds the key; nothing else is set.
+    fn env_with_key(name: &str) -> Option<String> {
+        (name == "K").then(|| KEY_VALUE.to_string())
+    }
+
+    fn env_empty(_: &str) -> Option<String> {
+        None
+    }
+
+    fn ctx<'a>(
+        dir: &tempfile::TempDir,
+        server: &MockServer,
+        env: &'a dyn Fn(&str) -> Option<String>,
+        tester: &'a dyn SampleTester,
+    ) -> SetupContext<'a> {
+        SetupContext {
+            config_path: dir.path().join("config.toml"),
+            cache_dir: dir.path().join("cache"),
+            compat_url: format!("{}/compat.json", server.uri()),
+            env,
+            tester,
+        }
+    }
+
+    /// Custom provider "mock" at the server, key variable `K`.
+    fn custom_provider(server: &MockServer) -> Vec<Answer> {
+        vec![
+            Answer::Select(3),
+            text("mock"),
+            text(&format!("{}/v1", server.uri())),
+            text("K"),
+        ]
+    }
+
+    fn script(server: &MockServer, rest: Vec<Answer>) -> Vec<Answer> {
+        let mut s = custom_provider(server);
+        s.extend(rest);
+        s
+    }
+
+    fn written_model(path: &std::path::Path) -> (String, String) {
+        let cfg = Config::load(path).unwrap();
+        let cli = Cli::try_parse_from(["srtty"]).unwrap();
+        let r = config::resolve(cfg, &cli, &env_with_key).unwrap();
+        (r.provider_name, r.model)
+    }
+
+    fn row(id: &str, usd_per_hour: Option<f64>, status: ModelStatus) -> ModelRow {
+        ModelRow {
+            id: id.into(),
+            usd_per_hour,
+            token_priced: false,
+            url: None,
+            status,
+            words: None,
+            fine_segments: None,
+            checked_at: None,
+        }
+    }
+
+    #[test]
+    fn model_labels_show_price_and_status() {
+        assert_eq!(
+            model_label(&row("a/b", Some(0.1), ModelStatus::Compatible)),
+            "a/b  $0.10/h  compatible"
+        );
+        assert_eq!(
+            model_label(&row("a/b", None, ModelStatus::Unknown)),
+            "a/b  price unknown  unknown"
+        );
+        let token = ModelRow {
+            token_priced: true,
+            url: Some("https://openrouter.ai/g/t".into()),
+            ..row("g/t", None, ModelStatus::CompatibleSpeakers)
+        };
+        assert_eq!(
+            model_label(&token),
+            "g/t  billed per token, see https://openrouter.ai/g/t  compatible + speakers"
+        );
+    }
+
+    #[test]
+    fn incompatible_models_are_behind_an_option() {
+        let rows = vec![
+            row("ok", Some(0.1), ModelStatus::Compatible),
+            row("bad", Some(0.01), ModelStatus::Incompatible),
+        ];
+        let menu = model_menu(&rows, false);
+        assert_eq!(
+            menu.options,
+            [
+                "ok  $0.10/h  compatible",
+                "Show incompatible models",
+                "Enter a model id"
+            ]
+        );
+        let menu = model_menu(&rows, true);
+        assert_eq!(
+            menu.options,
+            [
+                "ok  $0.10/h  compatible",
+                "bad  $0.01/h  incompatible",
+                "Enter a model id"
+            ]
+        );
+    }
+
+    #[test]
+    fn fallback_rows_come_from_compat_json() {
+        let list = CompatList::embedded();
+        let r = fallback_rows(&list, "https://openrouter.ai/api/v1");
+        let nova = r.iter().find(|m| m.id == "deepgram/nova-3").unwrap();
+        assert_eq!(nova.usd_per_hour, Some(0.26));
+        assert_eq!(nova.status, ModelStatus::CompatibleSpeakers);
+        assert!(fallback_rows(&list, "http://localhost:8000/v1").is_empty());
+    }
+
+    #[tokio::test]
+    async fn setup_writes_a_usable_config() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![Answer::Select(0), Answer::Confirm(false)],
+        ));
+
+        let done = run_setup(&mut p, &ctx).await.unwrap();
+
+        for line in &p.said {
+            println!("say: {line}");
+        }
+        assert!(done.written);
+        assert_eq!(done.path, ctx.config_path);
+        assert_eq!(
+            p.options[0],
+            [
+                "OpenRouter",
+                "OpenAI",
+                "Groq",
+                "Custom OpenAI-compatible URL",
+                "Local Whisper (not available in this build)"
+            ]
+        );
+        assert_eq!(
+            p.options[1],
+            [
+                "whisper-1  price unknown  unknown",
+                "whisper-large-v3  price unknown  unknown",
+                "Enter a model id"
+            ]
+        );
+        assert!(p.said.contains(&"✔ K is set".to_string()), "{:?}", p.said);
+        assert_eq!(tester.calls(), 0);
+        let path = ctx.config_path.display().to_string();
+        assert_eq!(
+            p.said[p.said.len() - 2..],
+            [
+                format!("Wrote {path}."),
+                "Next: srtty <video-or-audio-file>".to_string()
+            ]
+        );
+        assert_eq!(
+            written_model(&ctx.config_path),
+            ("mock".to_string(), "whisper-1".to_string())
+        );
+        let text = std::fs::read_to_string(&ctx.config_path).unwrap();
+        assert!(!text.contains(KEY_VALUE) && !p.everything().contains(KEY_VALUE));
+    }
+
+    #[tokio::test]
+    async fn setup_rejects_a_pasted_key_without_echo() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let mut p = ScriptedPrompter::new(vec![
+            Answer::Select(3),
+            text("mock"),
+            text(&format!("{}/v1", server.uri())),
+            text("gsk_0123secret"),
+            text("K"),
+            Answer::Select(0),
+            Answer::Confirm(false),
+        ]);
+
+        run_setup(&mut p, &ctx).await.unwrap();
+
+        assert_eq!(
+            p.validator_errors,
+            [
+                "That looks like an API key. Enter the name of the variable that holds it, e.g. OPENROUTER_API_KEY."
+            ]
+        );
+        assert!(!p.everything().contains("0123secret"), "{}", p.everything());
+        let text = std::fs::read_to_string(&ctx.config_path).unwrap();
+        assert!(!text.contains("0123secret"), "{text}");
+        assert!(text.contains("api_key_env = \"K\""), "{text}");
+    }
+
+    #[tokio::test]
+    async fn env_var_validator_rejects_invalid_names() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let mut p = ScriptedPrompter::new(script_with_var(&server, &["MY-KEY", "K"]));
+
+        run_setup(&mut p, &ctx).await.unwrap();
+
+        assert_eq!(
+            p.validator_errors,
+            ["Use letters, digits and underscores, e.g. OPENROUTER_API_KEY."]
+        );
+    }
+
+    fn script_with_var(server: &MockServer, vars: &[&str]) -> Vec<Answer> {
+        let mut s = vec![
+            Answer::Select(3),
+            text("mock"),
+            text(&format!("{}/v1", server.uri())),
+        ];
+        s.extend(vars.iter().map(|v| text(v)));
+        s.extend([Answer::Select(0), Answer::Confirm(false)]);
+        s
+    }
+
+    #[tokio::test]
+    async fn custom_provider_name_and_url_are_validated() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let mut p = ScriptedPrompter::new(vec![
+            Answer::Select(3),
+            text("My Provider"),
+            text("mock"),
+            text("localhost:8000/v1"),
+            text("http://"),
+            text(&format!("{}/v1", server.uri())),
+            text("K"),
+            Answer::Select(0),
+            Answer::Confirm(false),
+        ]);
+
+        run_setup(&mut p, &ctx).await.unwrap();
+
+        assert_eq!(p.validator_errors.len(), 3, "{:?}", p.validator_errors);
+        assert_eq!(
+            p.prompts[1..3],
+            [
+                "Provider name (used in the config file):",
+                "Base URL (e.g. http://localhost:8000/v1):"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn declining_overwrite_leaves_file_untouched() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let before = "# mine\ndefault_provider = \"other\"\n";
+        std::fs::write(&ctx.config_path, before).unwrap();
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![
+                Answer::Select(0),
+                Answer::Confirm(false),
+                Answer::Confirm(false),
+            ],
+        ));
+
+        let done = run_setup(&mut p, &ctx).await.unwrap();
+
+        assert!(!done.written);
+        assert_eq!(std::fs::read(&ctx.config_path).unwrap(), before.as_bytes());
+        let path = ctx.config_path.display();
+        assert_eq!(
+            p.prompts.last().unwrap(),
+            &format!(
+                "Update {path}? This sets default_provider = \"mock\" and replaces [providers.mock]."
+            )
+        );
+        assert_eq!(p.said.last().unwrap(), "Nothing written.");
+    }
+
+    #[tokio::test]
+    async fn accepting_overwrite_keeps_the_rest_of_the_file() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        std::fs::write(&ctx.config_path, "# mine\ndefault_provider = \"other\"\n").unwrap();
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![
+                Answer::Select(0),
+                Answer::Confirm(false),
+                Answer::Confirm(true),
+            ],
+        ));
+
+        let done = run_setup(&mut p, &ctx).await.unwrap();
+
+        assert!(done.written);
+        let text = std::fs::read_to_string(&ctx.config_path).unwrap();
+        assert!(text.contains("# mine"), "{text}");
+        assert_eq!(written_model(&ctx.config_path).0, "mock");
+    }
+
+    #[tokio::test]
+    async fn paid_test_runs_only_after_confirmation() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![Answer::Select(0), Answer::Confirm(false)],
+        ));
+        run_setup(&mut p, &ctx).await.unwrap();
+        assert_eq!(tester.calls(), 0);
+        assert!(
+            p.prompts
+                .contains(&"Test whisper-1 on a 30 s sample? Estimated cost: unknown.".to_string()),
+            "{:?}",
+            p.prompts
+        );
+
+        std::fs::remove_file(&ctx.config_path).unwrap();
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![Answer::Select(0), Answer::Confirm(true)],
+        ));
+        run_setup(&mut p, &ctx).await.unwrap();
+        assert_eq!(tester.calls(), 1);
+        assert!(
+            p.said
+                .contains(&"✔ Test passed: word timestamps available. (cost $0.0008)".to_string()),
+            "{:?}",
+            p.said
+        );
+    }
+
+    #[tokio::test]
+    async fn unset_key_skips_the_test_and_falls_back() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_empty, &tester);
+        let mut p =
+            ScriptedPrompter::new(script(&server, vec![Answer::Select(0), text("whisper-1")]));
+
+        let done = run_setup(&mut p, &ctx).await.unwrap();
+
+        assert!(done.written);
+        assert_eq!(tester.calls(), 0);
+        assert!(
+            p.said
+                .contains(&"! K is not set. Export it before running srtty.".to_string()),
+            "{:?}",
+            p.said
+        );
+        assert!(
+            p.said
+                .iter()
+                .any(|l| l.starts_with("! Could not list models:")),
+            "{:?}",
+            p.said
+        );
+        assert!(!p.prompts.iter().any(|m| m.starts_with("Test ")));
+    }
+
+    #[tokio::test]
+    async fn failed_test_returns_to_model_choice() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(Verdict::Unusable);
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![
+                Answer::Select(0),
+                Answer::Confirm(true),
+                Answer::Confirm(false),
+                Answer::Select(1),
+                Answer::Confirm(false),
+            ],
+        ));
+
+        run_setup(&mut p, &ctx).await.unwrap();
+
+        assert_eq!(p.asked("Model:"), 2);
+        assert_eq!(p.asked("Keep whisper-1 anyway?"), 1);
+        assert!(
+            p.said
+                .contains(&"✘ This model cannot produce subtitles. (cost $0.0008)".to_string()),
+            "{:?}",
+            p.said
+        );
+        assert_eq!(written_model(&ctx.config_path).1, "whisper-large-v3");
+    }
+
+    #[tokio::test]
+    async fn local_whisper_is_explained_then_asked_again() {
+        let server = server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let mut s = vec![Answer::Select(4)];
+        s.extend(script(
+            &server,
+            vec![Answer::Select(0), Answer::Confirm(false)],
+        ));
+        let mut p = ScriptedPrompter::new(s);
+
+        run_setup(&mut p, &ctx).await.unwrap();
+
+        assert_eq!(p.asked("Which transcription provider?"), 2);
+        assert_eq!(
+            p.said[0],
+            "Local Whisper needs a build with the `local` feature: cargo install srtty --features local"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_failure_falls_back_to_manual_entry() {
+        let server = server(500).await;
+        let dir = tempfile::tempdir().unwrap();
+        let tester = FakeTester::new(usable());
+        let ctx = ctx(&dir, &server, &env_with_key, &tester);
+        let mut p = ScriptedPrompter::new(script(
+            &server,
+            vec![Answer::Select(0), text("my-model"), Answer::Confirm(false)],
+        ));
+
+        run_setup(&mut p, &ctx).await.unwrap();
+
+        assert!(
+            p.said
+                .iter()
+                .any(|l| l.starts_with("! Could not list models:")),
+            "{:?}",
+            p.said
+        );
+        assert_eq!(p.options[1], ["Enter a model id"]);
+        assert!(p.prompts.contains(&"Model id:".to_string()));
+        assert_eq!(written_model(&ctx.config_path).1, "my-model");
+    }
+}

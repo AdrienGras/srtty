@@ -306,12 +306,18 @@ const COMPAT_BODY: &str = r#"{"schema":1,"generated_at":"2030-01-02","models":[]
 
 /// Serves `/v1/models` (two Whisper models) and `/compat.json`.
 async fn models_server(models_status: u16, compat_status: u16) -> MockServer {
-    let server = MockServer::start().await;
     let listing = r#"{"data":[{"id":"whisper-1"},{"id":"whisper-large-v3"}]}"#;
+    models_server_with(listing, models_status, compat_status).await
+}
+
+/// Serves `listing` at `/v1/models` and `/compat.json`.
+async fn models_server_with(listing: &str, models_status: u16, compat_status: u16) -> MockServer {
+    let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
         .respond_with(
-            ResponseTemplate::new(models_status).set_body_raw(listing, "application/json"),
+            ResponseTemplate::new(models_status)
+                .set_body_raw(listing.to_string(), "application/json"),
         )
         .mount(&server)
         .await;
@@ -546,4 +552,63 @@ async fn setup_with_json_prints_json_error() {
         err["error"].as_str().unwrap().contains("interactive"),
         "{err}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_says_when_no_transcription_model_is_listed() {
+    let server = models_server_with(r#"{"data":[{"id":"gpt-4o"}]}"#, 200, 200).await;
+    let expected = "no transcription models found for `mock`";
+
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    cmd.arg("models");
+    let out = run(cmd).await;
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stderr.contains(expected), "{stderr}");
+
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    cmd.args(["models", "--json"]);
+    let out = run(cmd).await;
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(v["warnings"], serde_json::json!([expected]));
+    assert!(v["models"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn models_404_suggests_entering_a_model_id() {
+    let server = models_server(404, 200).await;
+    let (_sb, mut cmd) = models_cmd(&server, true);
+    // JSON keeps the message on one line; the terminal rendering wraps it.
+    cmd.args(["models", "--json"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", text(&out.stderr));
+    let err: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(
+        err["error"],
+        "listing models failed: HTTP 404 (this endpoint may not list models; run `srtty setup` and enter a model id)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_flag_is_refused_where_it_is_not_used() {
+    let sb = Sandbox::config_only("http://127.0.0.1:9/v1", "m", 300.0);
+    for (args, command) in [
+        (&["setup", "--provider", "groq"][..], "srtty setup"),
+        (
+            &["compat", "probe", "--provider", "groq"][..],
+            "srtty compat probe",
+        ),
+    ] {
+        let mut cmd = sb.cmd_with_key();
+        cmd.args(args).write_stdin("");
+        let out = run(cmd).await;
+        let stderr = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+        assert!(
+            stderr.contains(&format!("--provider is not used by `{command}`")),
+            "{stderr}"
+        );
+    }
 }

@@ -30,6 +30,17 @@ const SPEAKERS_MAX_DURATION_S: f64 = 4500.0;
 const SPEAKERS_MAX_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
 
 pub async fn main(cli: Cli) -> Result<(), SrttyError> {
+    // `--provider` is global so that it reaches `models`; these commands ignore it.
+    let ignores_provider = match &cli.command {
+        Some(Command::Setup) => Some("srtty setup"),
+        Some(Command::Compat { .. }) => Some("srtty compat probe"),
+        _ => None,
+    };
+    if let (Some(command), Some(_)) = (ignores_provider, &cli.provider) {
+        return Err(SrttyError::Usage(format!(
+            "--provider is not used by `{command}`"
+        )));
+    }
     match cli.command {
         Some(Command::Config {
             action: ConfigAction::Show,

@@ -184,6 +184,24 @@ pub async fn fetch_rows(
     Ok(rows(&listed, compat, provider_key(&target.base_url)))
 }
 
+/// Added to a 404 from an OpenAI-style listing.
+const NO_LISTING_HINT: &str =
+    "this endpoint may not list models; run `srtty setup` and enter a model id";
+
+/// Adds [`NO_LISTING_HINT`] to a 404 from an OpenAI-style listing: some
+/// compatible servers transcribe without listing their models.
+fn with_listing_hint(target: &Target, e: SrttyError) -> SrttyError {
+    match e {
+        SrttyError::Network(message)
+            if Listing::for_base_url(&target.base_url) == Listing::OpenAi
+                && message.ends_with("HTTP 404") =>
+        {
+            SrttyError::Network(format!("{message} ({NO_LISTING_HINT})"))
+        }
+        other => other,
+    }
+}
+
 /// Reads the provider's key from the environment. A key is only required for
 /// OpenAI-style listings; OpenRouter lists its models without one.
 fn read_key(
@@ -226,9 +244,17 @@ pub async fn run(cli: &Cli) -> Result<(), SrttyError> {
     let target = listing_target(&cfg, cli.provider.as_deref(), &env)?;
     let key = read_key(&target, &env)?;
     let refreshed = refresh(&paths::cache_dir(), &compat_url(), REFRESH_TIMEOUT).await;
-    let rows = fetch_rows(&target, key.as_ref(), &refreshed.list).await?;
+    let rows = fetch_rows(&target, key.as_ref(), &refreshed.list)
+        .await
+        .map_err(|e| with_listing_hint(&target, e))?;
     let generated_at = refreshed.list.generated_at.as_str();
-    let warnings: Vec<String> = refreshed.warning.iter().cloned().collect();
+    let mut warnings: Vec<String> = refreshed.warning.iter().cloned().collect();
+    if rows.is_empty() {
+        warnings.push(format!(
+            "no transcription models found for `{}`",
+            target.name
+        ));
+    }
 
     if cli.json {
         let output = ModelsOutput {
@@ -435,5 +461,28 @@ mod tests {
         );
         let empty_env = |k: &str| (k == "SRTTY_PROVIDER").then(String::new);
         assert_eq!(listing_target(&c, None, &empty_env).unwrap().name, "openai");
+    }
+
+    #[test]
+    fn a_404_from_an_openai_style_listing_gets_a_hint() {
+        let target = |base_url: &str| Target {
+            name: "p".into(),
+            base_url: base_url.into(),
+            api_key_env: None,
+        };
+        let not_found = || SrttyError::Network("listing models failed: HTTP 404".into());
+        let hinted = with_listing_hint(&target("http://localhost:8000/v1"), not_found());
+        assert_eq!(
+            hinted.to_string(),
+            "listing models failed: HTTP 404 (this endpoint may not list models; run `srtty setup` and enter a model id)"
+        );
+        assert_eq!(hinted.exit_code(), 2);
+        let openrouter = with_listing_hint(&target("https://openrouter.ai/api/v1"), not_found());
+        assert_eq!(openrouter.to_string(), "listing models failed: HTTP 404");
+        let server_error = with_listing_hint(
+            &target("http://localhost:8000/v1"),
+            SrttyError::Network("listing models failed: HTTP 500".into()),
+        );
+        assert_eq!(server_error.to_string(), "listing models failed: HTTP 500");
     }
 }

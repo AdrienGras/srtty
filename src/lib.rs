@@ -10,6 +10,7 @@ pub mod media;
 pub mod models;
 pub mod output;
 pub mod paths;
+pub mod probe;
 pub mod providers;
 pub mod report;
 pub mod run;

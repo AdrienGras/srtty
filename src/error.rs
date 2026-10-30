@@ -1,6 +1,8 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
+use crate::transcribe::TranscribeError;
+
 #[derive(Debug, Error, Diagnostic)]
 pub enum SrttyError {
     #[error("{0}")]
@@ -15,6 +17,9 @@ pub enum SrttyError {
     #[error("model `{model}` cannot be used for transcription")]
     #[help("run `srtty models` to see compatible models")]
     UnusableModel { model: String },
+
+    #[error(transparent)]
+    Transcribe(#[from] TranscribeError),
 
     #[error("{0}")]
     Ffmpeg(String),
@@ -34,7 +39,7 @@ impl SrttyError {
             | SrttyError::Config(_)
             | SrttyError::Io(_)
             | SrttyError::CostNotConfirmed { .. } => 1,
-            SrttyError::UnusableModel { .. } => 2,
+            SrttyError::UnusableModel { .. } | SrttyError::Transcribe(_) => 2,
             SrttyError::Ffmpeg(_) => 3,
             SrttyError::Interrupted => 130,
         }
@@ -50,6 +55,10 @@ mod tests {
         assert_eq!(SrttyError::Usage("x".into()).exit_code(), 1);
         assert_eq!(
             SrttyError::UnusableModel { model: "m".into() }.exit_code(),
+            2
+        );
+        assert_eq!(
+            SrttyError::from(TranscribeError::Auth { status: 401 }).exit_code(),
             2
         );
         assert_eq!(SrttyError::Ffmpeg("x".into()).exit_code(), 3);

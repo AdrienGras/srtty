@@ -43,6 +43,44 @@ pub fn check_existing(text: &str) -> Result<(), String> {
 /// other providers, unmanaged keys) is left as it was.
 pub fn apply(existing: Option<&str>, choice: &ProviderChoice) -> Result<String, SrttyError> {
     check_key_var_name(&choice.api_key_env)?;
+    edit_provider(existing, &choice.name, |provider| {
+        provider.remove("kind");
+        set_string(provider, "base_url", &choice.base_url);
+        set_string(provider, "api_key_env", &choice.api_key_env);
+        set_string(provider, "model", &choice.model);
+    })
+}
+
+/// Makes `[providers.<name>]` a local whisper provider and the default one:
+/// sets `kind = "local"` and `model_path`, and removes the API keys
+/// (`base_url`, `api_key_env`, `model`, `request_mode`). Comments and other
+/// providers are left as they were.
+#[cfg(feature = "local")]
+pub fn apply_local(
+    existing: Option<&str>,
+    name: &str,
+    model_path: &Path,
+) -> Result<String, SrttyError> {
+    let model_path = model_path
+        .to_str()
+        .ok_or_else(|| SrttyError::Config("the model path must be valid UTF-8".into()))?;
+    edit_provider(existing, name, |provider| {
+        for key in ["base_url", "api_key_env", "model", "request_mode"] {
+            provider.remove(key);
+        }
+        set_string(provider, "kind", "local");
+        set_string(provider, "model_path", model_path);
+    })
+}
+
+/// Parses the config text, sets `default_provider = name`, lets `edit` change
+/// `[providers.<name>]` (created if missing), then checks that `Config`
+/// accepts the result.
+fn edit_provider(
+    existing: Option<&str>,
+    name: &str,
+    edit: impl FnOnce(&mut dyn TableLike),
+) -> Result<String, SrttyError> {
     let text = existing.unwrap_or("");
     let mut doc = text.parse::<DocumentMut>().map_err(|e| {
         SrttyError::Config(format!(
@@ -51,7 +89,7 @@ pub fn apply(existing: Option<&str>, choice: &ProviderChoice) -> Result<String, 
         ))
     })?;
 
-    set_string(doc.as_table_mut(), "default_provider", &choice.name);
+    set_string(doc.as_table_mut(), "default_provider", name);
 
     let providers = doc
         .entry("providers")
@@ -63,14 +101,11 @@ pub fn apply(existing: Option<&str>, choice: &ProviderChoice) -> Result<String, 
         .as_table_like_mut()
         .ok_or_else(|| not_a_table("providers"))?;
     let provider = providers
-        .entry(&choice.name)
+        .entry(name)
         .or_insert_with(|| Item::Table(Table::new()))
         .as_table_like_mut()
-        .ok_or_else(|| not_a_table(&format!("providers.{}", choice.name)))?;
-    provider.remove("kind");
-    set_string(provider, "base_url", &choice.base_url);
-    set_string(provider, "api_key_env", &choice.api_key_env);
-    set_string(provider, "model", &choice.model);
+        .ok_or_else(|| not_a_table(&format!("providers.{name}")))?;
+    edit(provider);
 
     let out = doc.to_string();
     toml::from_str::<Config>(&out).map_err(|e| {
@@ -242,5 +277,52 @@ mod tests {
             .to_string();
         assert!(err.contains("the existing config file"), "{err}");
         assert!(err.contains("unknown field `modle`"), "{err}");
+    }
+    #[cfg(feature = "local")]
+    #[test]
+    fn apply_local_replaces_api_keys_and_keeps_comments() {
+        let existing = "# my config\ndefault_provider = \"groq\"\n\n# my whisper server\n[providers.local]\nbase_url = \"http://localhost:8000/v1\"\napi_key_env = \"LOCAL_KEY\"\nmodel = \"whisper\"\nrequest_mode = \"json-base64\"\n\n[providers.groq]\napi_key_env = \"GROQ_API_KEY\"\nmodel = \"whisper-large-v3\"\n";
+        let text =
+            apply_local(Some(existing), "local", Path::new("/models/ggml-base.bin")).unwrap();
+        assert!(text.contains("# my config"), "{text}");
+        assert!(text.contains("# my whisper server"), "{text}");
+        for gone in [
+            "base_url",
+            "LOCAL_KEY",
+            "model = \"whisper\"",
+            "request_mode",
+        ] {
+            assert!(!text.contains(gone), "{gone} left in:\n{text}");
+        }
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.default_provider.as_deref(), Some("local"));
+        let local = &cfg.providers["local"];
+        assert_eq!(local.kind, ProviderKind::Local);
+        assert_eq!(
+            local.model_path.as_deref(),
+            Some(Path::new("/models/ggml-base.bin"))
+        );
+        assert_eq!(local.api_key_env, None);
+        assert_eq!(local.base_url, None);
+        assert_eq!(local.model, None);
+        assert_eq!(local.request_mode, RequestMode::default());
+        assert_eq!(
+            cfg.providers["groq"].model.as_deref(),
+            Some("whisper-large-v3")
+        );
+        assert_eq!(
+            cfg.providers["groq"].api_key_env.as_deref(),
+            Some("GROQ_API_KEY")
+        );
+    }
+
+    #[cfg(all(feature = "local", unix))]
+    #[test]
+    fn apply_local_refuses_a_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"/models/\xff.bin"));
+        let err = apply_local(None, "local", path).unwrap_err();
+        assert!(matches!(err, SrttyError::Config(_)), "{err}");
+        assert_eq!(err.to_string(), "the model path must be valid UTF-8");
     }
 }

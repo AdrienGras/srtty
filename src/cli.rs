@@ -23,7 +23,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub provider: Option<String>,
 
-    /// Transcription model.
+    /// Model id, or the path to a ggml model file for a local provider.
     #[arg(long)]
     pub model: Option<String>,
 

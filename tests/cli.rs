@@ -282,7 +282,35 @@ async fn e2e_config_show_masks_the_key() {
     assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
     assert!(stdout.contains("some/model") && stdout.contains(KEY_ENV));
     assert!(stdout.contains("***"));
+    assert!(stdout.contains("request_mode"), "{stdout}");
     assert!(!stdout.contains(KEY) && !text(&out.stderr).contains(KEY));
+}
+
+/// A local provider sends no request: `config show` has no `request_mode`.
+#[tokio::test(flavor = "multi_thread")]
+async fn config_show_local_provider_has_no_request_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "default_provider = \"local\"\n\
+         [providers.local]\n\
+         kind = \"local\"\n\
+         model_path = \"/m/ggml-base.bin\"\n",
+    )
+    .unwrap();
+    let mut cmd = cargo_bin_cmd!("srtty");
+    cmd.current_dir(dir.path())
+        .env("SRTTY_CONFIG", dir.path().join("config.toml"))
+        .env_remove("SRTTY_PROVIDER")
+        .env_remove("SRTTY_MODEL")
+        .env_remove("SRTTY_LANGUAGE")
+        .args(["config", "show", "--json"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(v["model_path"], "/m/ggml-base.bin", "{v}");
+    assert!(v.get("request_mode").is_none(), "{v}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -641,4 +669,41 @@ async fn provider_flag_is_refused_where_it_is_not_used() {
             "{stderr}"
         );
     }
+}
+
+/// Without the `local` feature, a run on a local provider stops before any work.
+#[cfg(not(feature = "local"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_local_provider_needs_the_feature() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "default_provider = \"local\"\n\
+         [providers.local]\n\
+         kind = \"local\"\n\
+         model_path = \"/nonexistent/ggml-base.bin\"\n",
+    )
+    .unwrap();
+    let mut cmd = cargo_bin_cmd!("srtty");
+    cmd.current_dir(dir.path())
+        .env("SRTTY_CONFIG", dir.path().join("config.toml"))
+        .env("XDG_CACHE_HOME", dir.path().join("cache"))
+        .env_remove("SRTTY_PROVIDER")
+        .env_remove("SRTTY_MODEL")
+        .env_remove("SRTTY_LANGUAGE")
+        .arg("whatever.mkv");
+    let out = run(cmd).await;
+    let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    // The error report wraps long messages across lines.
+    let flat = stderr
+        .replace('│', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        flat.contains("cargo install srtty --features local"),
+        "{flat}"
+    );
+    assert!(stdout.is_empty(), "{stdout}");
 }

@@ -8,6 +8,8 @@ pub mod config;
 pub mod dashboard;
 pub mod error;
 pub mod fsutil;
+#[cfg(feature = "local")]
+pub mod local;
 pub mod media;
 pub mod models;
 pub mod output;

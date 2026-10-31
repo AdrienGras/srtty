@@ -70,14 +70,15 @@ impl Default for SubtitleConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ChunkingConfig {
     pub target_s: f64,
-    pub jobs: usize,
+    /// Chunks transcribed at once; `None` picks a default from the backend and the machine.
+    pub jobs: Option<usize>,
 }
 
 impl Default for ChunkingConfig {
     fn default() -> Self {
         Self {
             target_s: 300.0,
-            jobs: 4,
+            jobs: None,
         }
     }
 }
@@ -178,20 +179,122 @@ pub struct Resolved {
     pub language: Option<String>,
     pub prompt: Option<String>,
     pub target_s: f64,
-    pub jobs: usize,
+    pub jobs: Option<usize>,
+    /// The whisper model file of a local provider; `None` for an API provider.
+    pub model_path: Option<PathBuf>,
     pub subtitles: SubtitleConfig,
     pub confirm_above_usd: f64,
 }
 
+/// What a run transcribes with, once its settings are checked.
+#[derive(Debug, Clone)]
+pub enum Backend {
+    Api {
+        base_url: String,
+        key: ApiKey,
+        mode: RequestMode,
+    },
+    Local {
+        model_path: PathBuf,
+    },
+}
+
 impl Resolved {
-    /// The API key, or an error naming the variable that should hold it.
-    pub fn require_key(&self) -> Result<ApiKey, SrttyError> {
-        match &self.api_key {
-            KeyState::Set(key) => Ok(key.clone()),
-            KeyState::Unset { var } => Err(SrttyError::Config(format!(
+    /// The backend of the selected provider, or the config error that stops the run:
+    /// an unset key variable, or a missing `base_url`.
+    pub fn backend(&self) -> Result<Backend, SrttyError> {
+        match (self.provider.kind, &self.api_key, &self.model_path) {
+            (ProviderKind::Local, _, Some(model_path)) => Ok(Backend::Local {
+                model_path: model_path.clone(),
+            }),
+            (ProviderKind::Local, ..) => Err(missing_model_path(&self.provider_name)),
+            (ProviderKind::Api, KeyState::Unset { var }, _) => Err(SrttyError::Config(format!(
                 "environment variable {var} is not set"
             ))),
-            KeyState::NotNeeded => Ok(ApiKey(String::new())),
+            (ProviderKind::Api, KeyState::Set(key), _) => {
+                let base_url = self.provider.base_url.clone().ok_or_else(|| {
+                    SrttyError::Config(format!(
+                        "provider `{}` has no `base_url` in the config file",
+                        self.provider_name
+                    ))
+                })?;
+                Ok(Backend::Api {
+                    base_url,
+                    key: key.clone(),
+                    mode: self.provider.request_mode,
+                })
+            }
+            // `resolve` gives an API provider a key state of its own.
+            (ProviderKind::Api, KeyState::NotNeeded, _) => Err(SrttyError::Config(format!(
+                "provider `{}` has no `api_key_env` in the config file",
+                self.provider_name
+            ))),
+        }
+    }
+}
+
+/// Why a run on a local provider stops in a build without the `local` feature.
+pub const LOCAL_UNAVAILABLE: &str = "the local backend is not available in this build; reinstall with: cargo install srtty --features local";
+
+/// A local provider without `model_path`. Without the `local` feature, `srtty
+/// setup` cannot offer a model, so the build itself is the problem.
+fn missing_model_path(provider_name: &str) -> SrttyError {
+    if !cfg!(feature = "local") {
+        return SrttyError::Config(LOCAL_UNAVAILABLE.into());
+    }
+    SrttyError::Config(format!(
+        "provider `{provider_name}` has no `model_path`; run `srtty setup` or pass --model <path to a ggml model>"
+    ))
+}
+
+/// Chunks transcribed at once, and whisper threads for each of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parallelism {
+    pub jobs: usize,
+    /// Threads of one local chunk; `None` for an API provider.
+    pub threads_per_job: Option<usize>,
+}
+
+/// Chunks in flight by default with an API provider.
+pub const DEFAULT_API_JOBS: usize = 4;
+
+/// Whether this build runs whisper on a GPU (Metal on macOS).
+pub const GPU_BUILD: bool = cfg!(all(feature = "local", target_os = "macos"));
+
+/// Cores available to this process, 1 when the system will not say.
+pub fn available_cores() -> usize {
+    std::thread::available_parallelism().map_or(1, usize::from)
+}
+
+/// How many chunks to run at once. An explicit `jobs` is kept as is.
+///
+/// - API: `jobs` or 4, and no threads.
+/// - Local on a GPU build: `jobs` or 1 (the states queue on the same GPU),
+///   with `min(4, cores)` threads.
+/// - Local on the CPU: `jobs` or `clamp(cores / 4, 1, 4)`, with
+///   `clamp(cores / jobs, 1, 8)` threads.
+pub fn parallelism(
+    kind: ProviderKind,
+    jobs: Option<usize>,
+    cores: usize,
+    gpu: bool,
+) -> Parallelism {
+    let cores = cores.max(1);
+    match (kind, gpu) {
+        (ProviderKind::Api, _) => Parallelism {
+            jobs: jobs.unwrap_or(DEFAULT_API_JOBS),
+            threads_per_job: None,
+        },
+        (ProviderKind::Local, true) => Parallelism {
+            jobs: jobs.unwrap_or(1),
+            threads_per_job: Some(cores.min(4)),
+        },
+        (ProviderKind::Local, false) => {
+            let jobs = jobs.unwrap_or_else(|| (cores / 4).clamp(1, 4));
+            Parallelism {
+                jobs,
+                threads_per_job: Some((cores / jobs.max(1)).clamp(1, 8)),
+            }
         }
     }
 }
@@ -269,16 +372,29 @@ pub fn resolve(
         ))
     })?;
 
-    let model = cli
-        .model
-        .clone()
-        .or_else(|| env_value("SRTTY_MODEL"))
-        .or_else(|| provider.model.clone())
-        .ok_or_else(|| {
-            SrttyError::Config(format!(
-                "no model configured for provider `{provider_name}`; pass --model or set `model` in the config file"
-            ))
-        })?;
+    let model_override = cli.model.clone().or_else(|| env_value("SRTTY_MODEL"));
+    let (model, model_path) = match provider.kind {
+        ProviderKind::Local => {
+            let path = model_override
+                .map(PathBuf::from)
+                .or_else(|| provider.model_path.clone())
+                .ok_or_else(|| missing_model_path(&provider_name))?;
+            let path = paths::expand_tilde(&path, etcetera::home_dir().ok().as_deref());
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            (name, Some(path))
+        }
+        ProviderKind::Api => {
+            let model = model_override.or_else(|| provider.model.clone()).ok_or_else(|| {
+                SrttyError::Config(format!(
+                    "no model configured for provider `{provider_name}`; pass --model or set `model` in the config file"
+                ))
+            })?;
+            (model, None)
+        }
+    };
 
     let api_key = match provider.kind {
         ProviderKind::Local => KeyState::NotNeeded,
@@ -306,7 +422,8 @@ pub fn resolve(
         language: cli.language.clone().or_else(|| env_value("SRTTY_LANGUAGE")),
         prompt: cli.prompt.clone(),
         target_s: cli.chunk.unwrap_or(cfg.chunking.target_s),
-        jobs: cli.jobs.unwrap_or(cfg.chunking.jobs),
+        jobs: cli.jobs.or(cfg.chunking.jobs),
+        model_path,
         subtitles: cfg.subtitles,
         confirm_above_usd: cfg.confirm_above_usd,
     })
@@ -348,7 +465,7 @@ model = "whisper-large-v3"
         );
         assert_eq!(c.subtitles.max_duration_s, 7.0);
         assert_eq!(c.subtitles.speaker_label, "Speaker");
-        assert_eq!((c.chunking.target_s, c.chunking.jobs), (300.0, 4));
+        assert_eq!((c.chunking.target_s, c.chunking.jobs), (300.0, None));
         assert_eq!(c.confirm_above_usd, 1.0);
     }
 
@@ -364,16 +481,10 @@ model = "whisper-large-v3"
         let r = resolve(cfg, &cli, &env).unwrap();
         assert_eq!(r.provider_name, "groq");
         assert_eq!(r.model, "flag-model");
-        assert_eq!(r.require_key().unwrap().expose(), "gsk-secret");
-    }
-
-    #[test]
-    fn missing_key_names_the_variable_not_the_value() {
-        let cfg: Config = toml::from_str(TOML).unwrap();
-        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
-        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
-        let err = r.require_key().unwrap_err().to_string();
-        assert!(err.contains("OPENROUTER_API_KEY"));
+        let Backend::Api { key, .. } = r.backend().unwrap() else {
+            panic!("expected an API backend");
+        };
+        assert_eq!(key.expose(), "gsk-secret");
     }
 
     #[test]
@@ -428,7 +539,7 @@ model = "whisper-large-v3"
                 .unwrap()
                 .chunking
                 .jobs,
-            4
+            None
         );
     }
 
@@ -511,28 +622,173 @@ model = "whisper-large-v3"
     }
 
     #[test]
-    fn missing_key_is_reported_by_require_key_only() {
-        let cfg: Config = toml::from_str(TOML).unwrap();
-        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
-        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
-        assert!(matches!(&r.api_key, KeyState::Unset { var } if var == "OPENROUTER_API_KEY"));
-        assert!(
-            r.require_key()
-                .unwrap_err()
-                .to_string()
-                .contains("OPENROUTER_API_KEY")
-        );
-    }
-
-    #[test]
     fn local_provider_needs_no_key() {
         let cfg: Config = toml::from_str(
-            "default_provider = \"l\"\n[providers.l]\nkind = \"local\"\nmodel = \"m\"\n",
+            "default_provider = \"l\"\n[providers.l]\nkind = \"local\"\nmodel_path = \"/m/ggml-base.bin\"\n",
         )
         .unwrap();
         let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
         let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
         assert!(matches!(r.api_key, KeyState::NotNeeded));
+    }
+
+    fn local_cfg(model_path: Option<&str>) -> Config {
+        let path = model_path
+            .map(|p| format!("model_path = \"{p}\"\n"))
+            .unwrap_or_default();
+        toml::from_str(&format!(
+            "default_provider = \"l\"\n[providers.l]\nkind = \"local\"\n{path}"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn parallelism_rules() {
+        use ProviderKind::{Api, Local};
+        let p = |jobs, threads_per_job| Parallelism {
+            jobs,
+            threads_per_job,
+        };
+        let cases = [
+            ((Api, None, 16, false), p(4, None)),
+            ((Local, None, 16, false), p(4, Some(4))),
+            ((Local, None, 8, false), p(2, Some(4))),
+            ((Local, None, 2, false), p(1, Some(2))),
+            ((Local, None, 1, false), p(1, Some(1))),
+            ((Local, None, 64, false), p(4, Some(8))),
+            ((Local, Some(2), 16, false), p(2, Some(8))),
+            ((Local, Some(32), 16, false), p(32, Some(1))),
+            ((Local, None, 10, true), p(1, Some(4))),
+            ((Api, Some(7), 16, false), p(7, None)),
+        ];
+        for ((kind, jobs, cores, gpu), want) in cases {
+            assert_eq!(
+                parallelism(kind, jobs, cores, gpu),
+                want,
+                "{kind:?} {jobs:?} {cores} {gpu}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_provider_resolves_its_model_path() {
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let r = resolve(local_cfg(Some("/m/ggml-base.bin")), &cli, &env_with(&[])).unwrap();
+        assert_eq!(r.model, "ggml-base.bin");
+        assert_eq!(r.model_path, Some(PathBuf::from("/m/ggml-base.bin")));
+        match r.backend().unwrap() {
+            Backend::Local { model_path } => {
+                assert_eq!(model_path, PathBuf::from("/m/ggml-base.bin"))
+            }
+            other => panic!("expected a local backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_model_path_expands_tilde() {
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let cfg = local_cfg(Some("~/m/ggml-base.bin"));
+        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
+        let path = r.model_path.unwrap();
+        assert!(!path.starts_with("~"), "{}", path.display());
+        assert!(path.ends_with("m/ggml-base.bin"), "{}", path.display());
+        assert_eq!(r.model, "ggml-base.bin");
+    }
+
+    #[test]
+    fn model_flag_overrides_local_model_path() {
+        let cli =
+            Cli::try_parse_from(["srtty", "a.mp4", "--model", "/tmp/x/ggml-tiny.bin"]).unwrap();
+        let r = resolve(local_cfg(Some("/m/ggml-base.bin")), &cli, &env_with(&[])).unwrap();
+        assert_eq!(r.model_path, Some(PathBuf::from("/tmp/x/ggml-tiny.bin")));
+        assert_eq!(r.model, "ggml-tiny.bin");
+
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let env = env_with(&[("SRTTY_MODEL", "/tmp/x/ggml-tiny.bin")]);
+        let r = resolve(local_cfg(Some("/m/ggml-base.bin")), &cli, &env).unwrap();
+        assert_eq!(r.model_path, Some(PathBuf::from("/tmp/x/ggml-tiny.bin")));
+        assert_eq!(r.model, "ggml-tiny.bin");
+    }
+
+    /// Without the feature, `srtty setup` cannot help: say what can.
+    #[cfg(not(feature = "local"))]
+    #[test]
+    fn local_provider_without_model_path_needs_the_feature() {
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let err = resolve(local_cfg(None), &cli, &env_with(&[])).unwrap_err();
+        assert!(matches!(err, SrttyError::Config(_)));
+        assert_eq!(
+            err.to_string(),
+            "the local backend is not available in this build; reinstall with: cargo install srtty --features local"
+        );
+    }
+
+    #[cfg(feature = "local")]
+    #[test]
+    fn local_provider_without_model_path_is_a_config_error() {
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let err = resolve(local_cfg(None), &cli, &env_with(&[])).unwrap_err();
+        assert!(matches!(err, SrttyError::Config(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("model_path") && msg.contains("srtty setup"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn api_provider_has_no_model_path() {
+        let cfg: Config = toml::from_str(TOML).unwrap();
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
+        assert_eq!(r.model_path, None);
+    }
+
+    #[test]
+    fn jobs_come_from_the_flag_then_the_config() {
+        let cfg: Config = toml::from_str(&format!("{TOML}[chunking]\njobs = 3\n")).unwrap();
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let r = resolve(cfg.clone(), &cli, &env_with(&[])).unwrap();
+        assert_eq!(r.jobs, Some(3));
+        let cli = Cli::try_parse_from(["srtty", "a.mp4", "--jobs", "5"]).unwrap();
+        assert_eq!(resolve(cfg, &cli, &env_with(&[])).unwrap().jobs, Some(5));
+        let cfg: Config = toml::from_str(TOML).unwrap();
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        assert_eq!(resolve(cfg, &cli, &env_with(&[])).unwrap().jobs, None);
+    }
+
+    #[test]
+    fn api_backend_carries_key_and_base_url() {
+        let cfg: Config = toml::from_str(TOML).unwrap();
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+
+        let env = env_with(&[("OPENROUTER_API_KEY", "sk-or-secret")]);
+        let r = resolve(cfg.clone(), &cli, &env).unwrap();
+        match r.backend().unwrap() {
+            Backend::Api {
+                base_url,
+                key,
+                mode,
+            } => {
+                assert_eq!(base_url, "https://openrouter.ai/api/v1");
+                assert_eq!(key.expose(), "sk-or-secret");
+                assert_eq!(mode, RequestMode::Multipart);
+            }
+            other => panic!("expected an API backend, got {other:?}"),
+        }
+
+        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
+        assert!(matches!(&r.api_key, KeyState::Unset { var } if var == "OPENROUTER_API_KEY"));
+        let err = r.backend().unwrap_err().to_string();
+        assert!(err.contains("OPENROUTER_API_KEY"), "{err}");
+
+        let cfg: Config = toml::from_str(
+            "default_provider = \"p\"\n[providers.p]\napi_key_env = \"K\"\nmodel = \"m\"\n",
+        )
+        .unwrap();
+        let r = resolve(cfg, &cli, &env_with(&[("K", "v")])).unwrap();
+        let err = r.backend().unwrap_err().to_string();
+        assert!(err.contains("base_url"), "{err}");
     }
 
     #[test]

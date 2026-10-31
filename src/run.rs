@@ -371,7 +371,7 @@ fn approximate_unusable(chunk: &AudioChunk, t: &mut Transcript) -> Option<String
     ))
 }
 
-fn mm_ss(s: f64) -> String {
+pub(crate) fn mm_ss(s: f64) -> String {
     let secs = s.max(0.0) as u64;
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }

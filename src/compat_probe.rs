@@ -283,7 +283,7 @@ struct LiveProber {
 }
 
 impl LiveProber {
-    fn transcriber(&self, model: &str) -> OpenAiCompatible {
+    fn transcriber(&self, model: &str) -> Result<OpenAiCompatible, TranscribeError> {
         OpenAiCompatible::new(
             self.base_url.clone(),
             self.key.clone(),
@@ -315,7 +315,7 @@ impl LiveProber {
 #[async_trait]
 impl Prober for LiveProber {
     async fn probe(&self, model: &str) -> Result<ProbeOutcome, TranscribeError> {
-        let t = self.transcriber(model);
+        let t = self.transcriber(model)?;
         let outcome = probe_model(&t, &self.sample.chunk, &self.reporter).await?;
         self.add_cost(model, outcome.cost_usd, SAMPLE_S);
         Ok(outcome)
@@ -330,7 +330,7 @@ impl Prober for LiveProber {
         model: &str,
         option: &serde_json::Value,
     ) -> Result<(Option<bool>, Option<f64>), TranscribeError> {
-        let t = self.transcriber(model);
+        let t = self.transcriber(model)?;
         let result =
             probe_diarization(&t, &self.speakers_sample.chunk, option, &self.reporter).await?;
         self.add_cost(model, result.1, SPEAKERS_SAMPLE_S);

@@ -340,7 +340,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         api_key,
         r.model,
         r.provider.request_mode,
-    ));
+    )?);
     let mut summary = run(prep, req, transcriber, reporter, cancel).await?;
     summary.elapsed_s = started.elapsed().as_secs_f64();
     warnings.append(&mut summary.warnings);

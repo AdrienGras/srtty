@@ -51,7 +51,7 @@ impl SampleTester for LiveTester {
             key.clone(),
             model.to_string(),
             RequestMode::Multipart,
-        );
+        )?;
         probe_model_once(&t, &sample.chunk).await
     }
 }

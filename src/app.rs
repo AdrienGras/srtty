@@ -194,7 +194,9 @@ struct ConfigView<'a> {
     model: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_path: Option<&'a Path>,
-    request_mode: RequestMode,
+    /// Only for an API provider: a local one sends no request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_mode: Option<RequestMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<&'a str>,
     confirm_above_usd: f64,
@@ -226,7 +228,7 @@ fn show_config(cli: &Cli) -> Result<(), SrttyError> {
         },
         model: &r.model,
         model_path: r.model_path.as_deref(),
-        request_mode: r.provider.request_mode,
+        request_mode: (r.provider.kind == ProviderKind::Api).then_some(r.provider.request_mode),
         language: r.language.as_deref(),
         confirm_above_usd: r.confirm_above_usd,
         subtitles: &r.subtitles,

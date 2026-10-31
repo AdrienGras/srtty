@@ -282,7 +282,35 @@ async fn e2e_config_show_masks_the_key() {
     assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
     assert!(stdout.contains("some/model") && stdout.contains(KEY_ENV));
     assert!(stdout.contains("***"));
+    assert!(stdout.contains("request_mode"), "{stdout}");
     assert!(!stdout.contains(KEY) && !text(&out.stderr).contains(KEY));
+}
+
+/// A local provider sends no request: `config show` has no `request_mode`.
+#[tokio::test(flavor = "multi_thread")]
+async fn config_show_local_provider_has_no_request_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "default_provider = \"local\"\n\
+         [providers.local]\n\
+         kind = \"local\"\n\
+         model_path = \"/m/ggml-base.bin\"\n",
+    )
+    .unwrap();
+    let mut cmd = cargo_bin_cmd!("srtty");
+    cmd.current_dir(dir.path())
+        .env("SRTTY_CONFIG", dir.path().join("config.toml"))
+        .env_remove("SRTTY_PROVIDER")
+        .env_remove("SRTTY_MODEL")
+        .env_remove("SRTTY_LANGUAGE")
+        .args(["config", "show", "--json"]);
+    let out = run(cmd).await;
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("stdout is one JSON object");
+    assert_eq!(v["model_path"], "/m/ggml-base.bin", "{v}");
+    assert!(v.get("request_mode").is_none(), "{v}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

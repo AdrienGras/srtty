@@ -64,6 +64,7 @@ fn not_ggml(path: &Path) -> SrttyError {
 /// Checks that whisper.cpp knows the language code `code`. whisper.cpp also
 /// accepts full names (`french`), which are refused: only its short codes pass.
 pub fn check_language(code: &str) -> Result<(), SrttyError> {
+    quiet_whisper();
     let short = whisper_rs::get_lang_id(code).and_then(whisper_rs::get_lang_str);
     match short {
         Some(short) if short == code => Ok(()),
@@ -71,6 +72,12 @@ pub fn check_language(code: &str) -> Result<(), SrttyError> {
             "unknown language `{code}` for the local backend; use an ISO 639-1 code such as fr or en"
         ))),
     }
+}
+
+/// Sends whisper.cpp and ggml logs to the `log` crate, which has no backend
+/// here, so they never reach stderr. Only the first call has an effect.
+fn quiet_whisper() {
+    whisper_rs::install_logging_hooks();
 }
 
 /// Keeps a segment unless it is probably silence (`no_speech_prob > 0.6`) and
@@ -96,8 +103,7 @@ impl LocalWhisper {
     /// `threads` CPU threads.
     pub async fn load(path: &Path, threads: usize) -> Result<LocalWhisper, SrttyError> {
         check_ggml_magic(path)?;
-        // Sends whisper.cpp and ggml logs to the `log` crate, which has no backend here.
-        whisper_rs::install_logging_hooks();
+        quiet_whisper();
         let cannot_load = |e: &dyn std::fmt::Display| {
             SrttyError::Config(format!(
                 "cannot load the whisper model {}: {e}",
@@ -381,9 +387,30 @@ mod tests {
     fn check_language_cases() {
         check_language("fr").unwrap();
         check_language("en").unwrap();
-        let err = check_language("french").unwrap_err();
-        assert_eq!(err.exit_code(), 1);
-        assert!(err.to_string().contains("ISO 639-1"), "{err}");
+        for code in ["french", "xx"] {
+            let err = check_language(code).unwrap_err();
+            assert_eq!(err.exit_code(), 1);
+            assert!(err.to_string().contains("ISO 639-1"), "{err}");
+        }
+    }
+
+    /// whisper.cpp logs unknown codes to stderr unless the hooks are installed:
+    /// rerun `check_language_cases` alone in a child process and read its stderr.
+    #[test]
+    fn check_language_is_quiet() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "local::tests::check_language_cases",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("1 passed"), "{stdout}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("whisper_"), "{stderr}");
     }
 
     #[test]

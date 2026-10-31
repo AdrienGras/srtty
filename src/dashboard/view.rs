@@ -186,11 +186,24 @@ fn fg(color: Color) -> Style {
 }
 
 /// Box 1: input, model and the stage line.
+/// Stages are three spaces apart, or one when that does not fit.
 fn render_header(state: &DashboardState, spinner: char, area: Rect, frame: &mut Frame) {
+    let title = format!(" srtty · {} · {} ", state.input_name, state.model);
+    let block = boxed(title);
+    let width = usize::from(block.inner(area).width);
+    let mut line = stage_line(state, spinner, "   ");
+    if line.width() > width {
+        line = stage_line(state, spinner, " ");
+    }
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+/// `✔ Extract   ✔ Split   ⠋ Transcribe   · Assemble   · Write`
+fn stage_line(state: &DashboardState, spinner: char, separator: &'static str) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, stage) in Stage::ALL.into_iter().enumerate() {
         if i > 0 {
-            spans.push(Span::raw("   "));
+            spans.push(Span::raw(separator));
         }
         let (icon, color) = match state.stage(stage) {
             StageStatus::Done => ('✔', Color::Green),
@@ -200,8 +213,7 @@ fn render_header(state: &DashboardState, spinner: char, area: Rect, frame: &mut 
         spans.push(Span::styled(icon.to_string(), fg(color)));
         spans.push(Span::raw(format!(" {}", stage.label())));
     }
-    let title = format!(" srtty · {} · {} ", state.input_name, state.model);
-    frame.render_widget(Paragraph::new(Line::from(spans)).block(boxed(title)), area);
+    Line::from(spans)
 }
 
 /// Box 2: the visible chunk rows, and a summary row when the list scrolls.
@@ -216,9 +228,19 @@ fn render_chunks(
     let n = state.chunks.len();
     let (window, summary) = visible_window(n, state.first_unfinished(), rows);
     let digits = n.to_string().len();
-    let mut lines: Vec<Line> = window
+    let cells: Vec<ChunkCells> = window
         .clone()
-        .map(|i| chunk_line(i, &state.chunks[i], digits, now, spinner))
+        .map(|i| chunk_cells(i, &state.chunks[i], digits, now, spinner))
+        .collect();
+    // Details start in the same column, after the longest status label.
+    let label_width = cells
+        .iter()
+        .map(|c| c.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut lines: Vec<Line> = cells
+        .into_iter()
+        .map(|c| c.into_line(label_width))
         .collect();
     if summary {
         lines.push(Line::styled(
@@ -229,23 +251,45 @@ fn render_chunks(
     frame.render_widget(Paragraph::new(lines).block(boxed(" Chunks ".into())), area);
 }
 
-/// `#4 03:00–04:00  ↻ retry 1/3  HTTP 429, retrying in 1 s`
-fn chunk_line(
+/// The parts of a chunk row: `#4 03:00–04:00  `, `↻ retry 1/3`, then the
+/// detail `HTTP 429, retrying in 1 s` when there is one.
+struct ChunkCells {
+    head: String,
+    label: String,
+    detail: Option<String>,
+    color: Color,
+}
+
+impl ChunkCells {
+    /// Pads the label to `label_width` chars when a detail follows it.
+    fn into_line(self, label_width: usize) -> Line<'static> {
+        let status = match self.detail {
+            Some(detail) => format!("{:<label_width$}  {detail}", self.label),
+            None => self.label,
+        };
+        Line::from(vec![
+            Span::raw(self.head),
+            Span::styled(status, fg(self.color)),
+        ])
+    }
+}
+
+fn chunk_cells(
     index: usize,
     row: &ChunkRow,
     digits: usize,
     now: Duration,
     spinner: char,
-) -> Line<'static> {
+) -> ChunkCells {
     let head = format!(
         "#{:<digits$} {}–{}  ",
         index + 1,
         mm_ss(row.start_s),
         mm_ss(row.end_s)
     );
-    let (status, color) = match &row.status {
-        ChunkStatus::Pending => ("· pending".to_string(), Color::DarkGray),
-        ChunkStatus::Running => (format!("{spinner} transcribing"), Color::Cyan),
+    let (label, detail, color) = match &row.status {
+        ChunkStatus::Pending => ("· pending".to_string(), None, Color::DarkGray),
+        ChunkStatus::Running => (format!("{spinner} transcribing"), None, Color::Cyan),
         ChunkStatus::Retry {
             attempt,
             wait_s,
@@ -259,7 +303,8 @@ fn chunk_line(
                 format!("{reason}, retrying")
             };
             (
-                format!("↻ retry {attempt}/{MAX_RETRIES}  {wait}"),
+                format!("↻ retry {attempt}/{MAX_RETRIES}"),
+                Some(wait),
                 Color::Yellow,
             )
         }
@@ -273,10 +318,15 @@ fn chunk_line(
             } else {
                 format!("{secs:.1} s")
             };
-            (format!("✔ {words} words  {tail}"), Color::Green)
+            (format!("✔ {words} words"), Some(tail), Color::Green)
         }
     };
-    Line::from(vec![Span::raw(head), Span::styled(status, fg(color))])
+    ChunkCells {
+        head,
+        label,
+        detail,
+        color,
+    }
 }
 
 /// Box 3: the progress band, then the stats line.
@@ -527,6 +577,46 @@ mod tests {
         let lines = draw(&mockup_state(), 80, 1, s(70));
         // plan_layout(8, 80x2) is Compact
         assert!(lines[0].contains("Transcribe · 5/8 chunks · 4.0× realtime · $0.0200 · 1:10"));
+    }
+
+    /// Column (in chars) where `needle` starts on the line containing `row`.
+    fn column(lines: &[String], row: &str, needle: &str) -> usize {
+        let line = lines.iter().find(|l| l.contains(row)).unwrap();
+        let byte = line.find(needle).unwrap();
+        line[..byte].chars().count()
+    }
+
+    #[test]
+    fn chunk_details_line_up() {
+        let lines = draw(&mockup_state(), 80, 17, s(70));
+        assert_eq!(
+            column(&lines, "#1 ", "4.0 s"),
+            column(&lines, "#4 ", "HTTP 429")
+        );
+        // A shorter label (`✔ 9 words`) is padded to the same column.
+        let mut st = mockup_state();
+        st.apply(
+            &Event::ChunkDone {
+                index: 7,
+                words: 9,
+                secs: 2.5,
+                cost_usd: None,
+                cached: false,
+            },
+            s(70),
+        );
+        let lines = draw(&st, 80, 17, s(70));
+        assert_eq!(
+            column(&lines, "#8 ", "2.5 s"),
+            column(&lines, "#4 ", "HTTP 429")
+        );
+    }
+
+    #[test]
+    fn stage_line_fits_narrow_terminals() {
+        let lines = draw(&mockup_state(), 60, 17, s(70));
+        let stages = lines.iter().find(|l| l.contains("Extract")).unwrap();
+        assert!(stages.contains("· Write"));
     }
 
     #[test]

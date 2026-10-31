@@ -245,10 +245,13 @@ fn render_chunks(
         .map(|c| c.into_line(label_width))
         .collect();
     if summary {
-        lines.push(Line::styled(
-            format!("… {} above, {} below", window.start, n - window.end),
-            fg(Color::DarkGray),
-        ));
+        let hidden = [(window.start, "above"), (n - window.end, "below")]
+            .into_iter()
+            .filter(|&(count, _)| count > 0)
+            .map(|(count, side)| format!("{count} {side}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::styled(format!("… {hidden}"), fg(Color::DarkGray)));
     }
     frame.render_widget(Paragraph::new(lines).block(boxed(" Chunks ".into())), area);
 }
@@ -574,6 +577,14 @@ mod tests {
         assert!(lines.contains("#10 "));
         assert!(!lines.contains("#9 "));
         assert!(lines.contains("… 9 above, 4 below"));
+    }
+
+    #[test]
+    fn summary_row_omits_an_empty_side() {
+        // plan(20), nothing started: window 0..7
+        let lines = draw(&state_with_plan(20), 80, 17, s(1)).join("\n");
+        assert!(lines.contains("… 13 below"));
+        assert!(!lines.contains("above"));
     }
 
     #[test]

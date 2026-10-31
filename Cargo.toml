@@ -17,7 +17,7 @@ tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "process", 
 etcetera = "0.11"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 async-trait = "0.1.92"
 reqwest = { version = "0.13", default-features = false, features = ["multipart", "json", "rustls"] }
 base64 = "0.23.1"
@@ -25,6 +25,8 @@ sha2 = "0.11"
 tokio-util = "0.7.20"
 futures = "0.3"
 tempfile = "3"
+toml_edit = "0.25.17"
+inquire = "0.9.4"
 
 [dev-dependencies]
 assert_cmd = "2"

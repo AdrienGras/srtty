@@ -67,15 +67,21 @@ pub enum Usability {
 }
 
 impl Transcript {
+    /// Segments exist and average at most `FINE_SEGMENT_MAX_AVG_S` seconds.
+    pub fn has_fine_segments(&self) -> bool {
+        if self.segments.is_empty() {
+            return false;
+        }
+        let total: f64 = self.segments.iter().map(|s| s.end - s.start).sum();
+        total / self.segments.len() as f64 <= FINE_SEGMENT_MAX_AVG_S
+    }
+
     pub fn usability(&self) -> Usability {
         if !self.words.is_empty() {
             return Usability::Words;
         }
-        if !self.segments.is_empty() {
-            let total: f64 = self.segments.iter().map(|s| s.end - s.start).sum();
-            if total / self.segments.len() as f64 <= FINE_SEGMENT_MAX_AVG_S {
-                return Usability::FineSegments;
-            }
+        if self.has_fine_segments() {
+            return Usability::FineSegments;
         }
         if self.text.trim().is_empty() && self.segments.is_empty() {
             return Usability::NoSpeech;

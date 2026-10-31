@@ -1,5 +1,5 @@
-//! What the binary does once the command line is parsed: `config show`, or a
-//! transcription run with its checks, dry run and cost confirmation.
+//! What the binary does once the command line is parsed: `config show`,
+//! `setup`, or a transcription run with its checks, dry run and cost confirmation.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -11,15 +11,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::assemble::CueRules;
 use crate::cache::{CacheParams, ChunkCache};
-use crate::cli::{Cli, Command, ConfigAction};
-use crate::compat::{CompatEntry, CompatList, estimate_cost_usd, provider_key};
-use crate::config::{self, Config, ProviderKind, RequestMode, Resolved, SubtitleConfig};
+use crate::cli::{Cli, Command, CompatAction, ConfigAction};
+use crate::compat::{CompatEntry, CompatList, compat_url, estimate_cost_usd, provider_key};
+use crate::config::{self, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig};
 use crate::error::SrttyError;
 use crate::media::plan_chunks;
 use crate::output::speaker_prefix_reserve;
 use crate::paths;
 use crate::report::{Event, PlainReporter, Reporter, Summary};
 use crate::run::{RunRequest, SILENCE_WINDOW_S, prepare, run};
+use crate::setup::{InquirePrompter, LiveTester, SetupContext, run_setup};
 use crate::transcribe::TranscribeOptions;
 use crate::transcribe::openai::{OpenAiCompatible, is_openrouter};
 
@@ -29,12 +30,52 @@ const SPEAKERS_MAX_DURATION_S: f64 = 4500.0;
 const SPEAKERS_MAX_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
 
 pub async fn main(cli: Cli) -> Result<(), SrttyError> {
+    // `--provider` is global so that it reaches `models`; these commands ignore it.
+    let ignores_provider = match &cli.command {
+        Some(Command::Setup) => Some("srtty setup"),
+        Some(Command::Compat { .. }) => Some("srtty compat probe"),
+        _ => None,
+    };
+    if let (Some(command), Some(_)) = (ignores_provider, &cli.provider) {
+        return Err(SrttyError::Usage(format!(
+            "--provider is not used by `{command}`"
+        )));
+    }
     match cli.command {
         Some(Command::Config {
             action: ConfigAction::Show,
         }) => show_config(&cli),
+        Some(Command::Models) => crate::models::run(&cli).await,
+        Some(Command::Setup) => setup(&cli).await,
+        Some(Command::Compat {
+            action: CompatAction::Probe(args),
+        }) => crate::compat_probe::run(&args).await,
         None => transcribe(cli).await,
     }
+}
+
+/// `srtty setup`: only on a terminal, never with `--json`.
+async fn setup(cli: &Cli) -> Result<(), SrttyError> {
+    if cli.json {
+        return Err(SrttyError::Usage(
+            "`srtty setup` is interactive and does not support --json".into(),
+        ));
+    }
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return Err(SrttyError::Usage(
+            "`srtty setup` is interactive; run it in a terminal".into(),
+        ));
+    }
+    let env = |name: &str| std::env::var(name).ok();
+    let ctx = SetupContext {
+        config_path: paths::config_file(),
+        cache_dir: paths::cache_dir(),
+        compat_url: compat_url(),
+        env: &env,
+        tester: &LiveTester,
+    };
+    run_setup(&mut InquirePrompter, &ctx).await?;
+    Ok(())
 }
 
 /// Checks that a `--speakers` run can be sent as one request and returns the
@@ -134,7 +175,8 @@ struct ConfigView<'a> {
     base_url: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key_env: Option<&'a str>,
-    api_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
     model: &'a str,
     request_mode: RequestMode,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,7 +200,11 @@ fn show_config(cli: &Cli) -> Result<(), SrttyError> {
         kind: r.provider.kind,
         base_url: r.provider.base_url.as_deref(),
         api_key_env: r.provider.api_key_env.as_deref(),
-        api_key: r.api_key.to_string(),
+        api_key: match &r.api_key {
+            KeyState::Set(key) => Some(key.to_string()),
+            KeyState::Unset { var } => Some(format!("<unset: {var}>")),
+            KeyState::NotNeeded => None,
+        },
         model: &r.model,
         request_mode: r.provider.request_mode,
         language: r.language.as_deref(),
@@ -178,7 +224,7 @@ fn show_config(cli: &Cli) -> Result<(), SrttyError> {
 }
 
 /// Writes `text` and a newline to stdout; a closed stdout is an I/O error, not a panic.
-fn print_stdout(text: &str) -> Result<(), SrttyError> {
+pub(crate) fn print_stdout(text: &str) -> Result<(), SrttyError> {
     let mut out = std::io::stdout().lock();
     writeln!(out, "{text}")?;
     out.flush()?;
@@ -191,6 +237,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         SrttyError::Usage("no input file given; run `srtty --help` for usage".into())
     })?;
     let r = load_settings(&cli)?;
+    let api_key = r.require_key()?;
     if r.provider.kind == ProviderKind::Local {
         return Err(SrttyError::Config(
             "local backend is not available in this build".into(),
@@ -290,7 +337,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     };
     let transcriber = Arc::new(OpenAiCompatible::new(
         base_url,
-        r.api_key,
+        api_key,
         r.model,
         r.provider.request_mode,
     ));
@@ -379,12 +426,11 @@ fn summary_line(s: &Summary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::CompatList;
     use clap::Parser;
 
     #[test]
     fn preflight_rules() {
-        let l = CompatList::embedded();
+        let l = crate::test_support::compat_seed();
         let grok = l.find("openrouter", "x-ai/grok-stt-1.0");
         let turbo = l.find("openrouter", "openai/whisper-large-v3-turbo");
         assert_eq!(

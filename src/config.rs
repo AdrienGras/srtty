@@ -9,7 +9,7 @@ use crate::error::SrttyError;
 use crate::paths;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub default_provider: Option<String>,
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -35,7 +35,7 @@ pub enum RequestMode {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
     pub kind: ProviderKind,
     pub base_url: Option<String>,
@@ -47,7 +47,7 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SubtitleConfig {
     pub max_chars_per_line: usize,
     pub max_lines: usize,
@@ -67,7 +67,7 @@ impl Default for SubtitleConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChunkingConfig {
     pub target_s: f64,
     pub jobs: usize,
@@ -109,23 +109,29 @@ impl Config {
         };
         toml::from_str(&text).map_err(|e| {
             // The default rendering quotes the offending source line, which may
-            // hold a pasted API key: report only the position and the message.
-            let position = e
-                .span()
-                .map(|span| {
-                    let before = text.get(..span.start).unwrap_or(&text);
-                    let line = before.matches('\n').count() + 1;
-                    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-                    format!(" at line {line}, column {column}")
-                })
-                .unwrap_or_default();
+            // hold a pasted API key: report only the position and the message,
+            // with any key-like word masked (type errors echo the value).
             SrttyError::Config(format!(
-                "invalid config {}{position}: {}",
+                "invalid config {}{}: {}",
                 path.display(),
-                e.message()
+                toml_error_position(&text, e.span()),
+                redact_key_like(e.message())
             ))
         })
     }
+}
+
+/// ` at line L, column C` for the start of `span` in `text`, or nothing
+/// without a span. A TOML error is reported by its position only: the source
+/// line may hold a pasted API key.
+pub fn toml_error_position(text: &str, span: Option<std::ops::Range<usize>>) -> String {
+    span.map(|span| {
+        let before = text.get(..span.start).unwrap_or(text);
+        let line = before.matches('\n').count() + 1;
+        let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+        format!(" at line {line}, column {column}")
+    })
+    .unwrap_or_default()
 }
 
 /// An API key. Never printed: `Debug` and `Display` both show `***`.
@@ -150,13 +156,25 @@ impl fmt::Display for ApiKey {
     }
 }
 
+/// Whether the API key of the selected provider is available.
+#[derive(Debug, Clone)]
+pub enum KeyState {
+    Set(ApiKey),
+    /// The environment variable `var` is empty or absent.
+    Unset {
+        var: String,
+    },
+    /// The provider runs locally and takes no key.
+    NotNeeded,
+}
+
 /// Settings after merging the config file, the environment and the CLI flags.
 #[derive(Debug, Clone)]
 pub struct Resolved {
     pub provider_name: String,
     pub provider: ProviderConfig,
     pub model: String,
-    pub api_key: ApiKey,
+    pub api_key: KeyState,
     pub language: Option<String>,
     pub prompt: Option<String>,
     pub target_s: f64,
@@ -165,13 +183,63 @@ pub struct Resolved {
     pub confirm_above_usd: f64,
 }
 
+impl Resolved {
+    /// The API key, or an error naming the variable that should hold it.
+    pub fn require_key(&self) -> Result<ApiKey, SrttyError> {
+        match &self.api_key {
+            KeyState::Set(key) => Ok(key.clone()),
+            KeyState::Unset { var } => Err(SrttyError::Config(format!(
+                "environment variable {var} is not set"
+            ))),
+            KeyState::NotNeeded => Ok(ApiKey(String::new())),
+        }
+    }
+}
+
+/// Whether `s` starts with a well-known API key prefix (`sk-`, `gsk_`, `xai-`).
+pub fn looks_like_api_key(s: &str) -> bool {
+    ["sk-", "gsk_", "xai-"].iter().any(|p| s.starts_with(p))
+}
+
+/// Replaces every key-like word of `text` with `<redacted>`. Words are
+/// separated by a space, a backtick, or a single or double quote.
+pub fn redact_key_like(text: &str) -> String {
+    let is_separator = |c: char| matches!(c, ' ' | '`' | '\'' | '"');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let sep = rest.find(is_separator).unwrap_or(rest.len());
+        let (word, tail) = rest.split_at(sep);
+        out.push_str(if looks_like_api_key(word) {
+            "<redacted>"
+        } else {
+            word
+        });
+        let word_len = tail.chars().next().map_or(0, char::len_utf8);
+        out.push_str(&tail[..word_len]);
+        rest = &tail[word_len..];
+    }
+    out
+}
+
 /// Whether `name` matches `^[A-Za-z_][A-Za-z0-9_]*$`.
-fn is_env_var_name(name: &str) -> bool {
+pub fn is_env_var_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Rejects an `api_key_env` that is not the name of an environment variable,
+/// for instance a pasted key. The value itself is never echoed.
+pub fn check_key_var_name(var: &str) -> Result<(), SrttyError> {
+    if looks_like_api_key(var) || !is_env_var_name(var) {
+        return Err(SrttyError::Config(
+            "`api_key_env` must be the name of an environment variable (e.g. OPENROUTER_API_KEY), not the key itself".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Merge settings. Precedence, lowest to highest: config file, environment
@@ -213,22 +281,20 @@ pub fn resolve(
         })?;
 
     let api_key = match provider.kind {
-        ProviderKind::Local => ApiKey(String::new()),
+        ProviderKind::Local => KeyState::NotNeeded,
         ProviderKind::Api => {
             let var = provider.api_key_env.as_deref().ok_or_else(|| {
                 SrttyError::Config(format!(
                     "provider `{provider_name}` has no `api_key_env` in the config file"
                 ))
             })?;
-            if !is_env_var_name(var) {
-                return Err(SrttyError::Config(
-                    "`api_key_env` must be the name of an environment variable (e.g. OPENROUTER_API_KEY), not the key itself".into(),
-                ));
+            check_key_var_name(var)?;
+            match env_value(var) {
+                Some(value) => KeyState::Set(ApiKey(value)),
+                None => KeyState::Unset {
+                    var: var.to_string(),
+                },
             }
-            let value = env_value(var).ok_or_else(|| {
-                SrttyError::Config(format!("environment variable {var} is not set"))
-            })?;
-            ApiKey(value)
         }
     };
 
@@ -298,14 +364,15 @@ model = "whisper-large-v3"
         let r = resolve(cfg, &cli, &env).unwrap();
         assert_eq!(r.provider_name, "groq");
         assert_eq!(r.model, "flag-model");
-        assert_eq!(r.api_key.expose(), "gsk-secret");
+        assert_eq!(r.require_key().unwrap().expose(), "gsk-secret");
     }
 
     #[test]
     fn missing_key_names_the_variable_not_the_value() {
         let cfg: Config = toml::from_str(TOML).unwrap();
         let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
-        let err = resolve(cfg, &cli, &env_with(&[])).unwrap_err().to_string();
+        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
+        let err = r.require_key().unwrap_err().to_string();
         assert!(err.contains("OPENROUTER_API_KEY"));
     }
 
@@ -395,5 +462,91 @@ model = "whisper-large-v3"
             .unwrap_err()
             .to_string();
         assert!(err.contains("srtty setup") && err.contains("/tmp/custom.toml"));
+    }
+
+    #[test]
+    fn key_pasted_into_api_key_env_is_rejected_for_every_prefix() {
+        for key in [
+            "gsk_0123secret",
+            "sk-or-v1-0123secret",
+            "sk-proj-0123secret",
+            "xai-0123secret",
+        ] {
+            let cfg: Config = toml::from_str(&format!(
+                "default_provider = \"p\"\n[providers.p]\napi_key_env = \"{key}\"\nmodel = \"m\"\n"
+            ))
+            .unwrap();
+            let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+            let msg = resolve(cfg, &cli, &env_with(&[])).unwrap_err().to_string();
+            assert!(!msg.contains("0123secret"), "{msg}");
+            assert!(
+                msg.contains("must be the name of an environment variable"),
+                "{msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected() {
+        for toml in [
+            "defualt_provider = \"p\"",
+            "[providers.p]\nmodle = \"m\"",
+            "[subtitles]\nmax_line = 3",
+            "[chunking]\njob = 2",
+        ] {
+            assert!(toml::from_str::<Config>(toml).is_err(), "{toml}");
+        }
+    }
+
+    #[test]
+    fn toml_type_error_does_not_echo_a_key_like_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, "[providers.p]\nkind = \"gsk_0123secret\"\n").unwrap();
+        let msg = Config::load(&path).unwrap_err().to_string();
+        assert!(
+            !msg.contains("0123secret") && msg.contains("<redacted>"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn missing_key_is_reported_by_require_key_only() {
+        let cfg: Config = toml::from_str(TOML).unwrap();
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
+        assert!(matches!(&r.api_key, KeyState::Unset { var } if var == "OPENROUTER_API_KEY"));
+        assert!(
+            r.require_key()
+                .unwrap_err()
+                .to_string()
+                .contains("OPENROUTER_API_KEY")
+        );
+    }
+
+    #[test]
+    fn local_provider_needs_no_key() {
+        let cfg: Config = toml::from_str(
+            "default_provider = \"l\"\n[providers.l]\nkind = \"local\"\nmodel = \"m\"\n",
+        )
+        .unwrap();
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let r = resolve(cfg, &cli, &env_with(&[])).unwrap();
+        assert!(matches!(r.api_key, KeyState::NotNeeded));
+    }
+
+    #[test]
+    fn key_like_detection_and_redaction() {
+        for key in ["sk-abc", "gsk_abc", "xai-abc"] {
+            assert!(looks_like_api_key(key), "{key}");
+        }
+        for other in ["SK-abc", "GSK_abc", "OPENROUTER_API_KEY", "ask-x", ""] {
+            assert!(!looks_like_api_key(other), "{other}");
+        }
+        assert_eq!(
+            redact_key_like("invalid type: string \"gsk_0123\", expected kind 'sk-abc' `xai-1`"),
+            "invalid type: string \"<redacted>\", expected kind '<redacted>' `<redacted>`"
+        );
+        assert_eq!(redact_key_like("nothing to hide"), "nothing to hide");
     }
 }

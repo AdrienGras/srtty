@@ -20,7 +20,7 @@ pub struct Cli {
     pub format: Vec<Format>,
 
     /// Provider name from the config file.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub provider: Option<String>,
 
     /// Transcription model.
@@ -56,7 +56,7 @@ pub struct Cli {
     pub yes: bool,
 
     /// Emit machine-readable JSON.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub json: bool,
 
     /// Suppress progress output.
@@ -78,6 +78,49 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// List the provider's transcription models with price and compatibility.
+    Models,
+    /// Configure srtty interactively.
+    Setup,
+    /// Maintainer tools for compat.json.
+    #[command(hide = true)]
+    Compat {
+        #[command(subcommand)]
+        action: CompatAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CompatAction {
+    /// Probe the OpenRouter transcription models and rewrite compat.json.
+    Probe(ProbeArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProbeArgs {
+    /// compat.json to read and rewrite.
+    #[arg(long, default_value = "compat.json")]
+    pub output: PathBuf,
+
+    /// Skip models priced above this many USD per second.
+    #[arg(long, default_value_t = 0.001)]
+    pub max_usd_per_s: f64,
+
+    /// Stop before a probe could take the run above this many USD.
+    #[arg(long, default_value_t = 0.50)]
+    pub budget_usd: f64,
+
+    /// Probe only this model id (repeatable).
+    #[arg(long)]
+    pub only: Vec<String>,
+
+    /// Environment variable holding the OpenRouter API key.
+    #[arg(long, default_value = "OPENROUTER_API_KEY")]
+    pub api_key_env: String,
+
+    /// OpenRouter API base URL.
+    #[arg(long, hide = true, default_value = "https://openrouter.ai/api/v1")]
+    pub base_url: String,
 }
 
 #[derive(Debug, Subcommand)]

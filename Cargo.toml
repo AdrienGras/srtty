@@ -27,6 +27,7 @@ futures = "0.3"
 tempfile = "3"
 toml_edit = "0.25.17"
 inquire = "0.9.4"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29"] }
 
 [dev-dependencies]
 assert_cmd = "2"

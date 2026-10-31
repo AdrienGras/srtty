@@ -342,8 +342,7 @@ fn render_progress(
     let mut lines = band_lines(state, cells, block.inner(area).width);
     let mut stats = stats_parts(state, now);
     stats.push(format!("elapsed {}", fmt_clock(now.as_secs_f64())));
-    stats.extend(cancelling_hint(state));
-    lines.push(Line::raw(stats.join(" · ")));
+    lines.push(hinted_line(state, "", stats.join(" · ")));
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -406,15 +405,23 @@ fn stats_parts(state: &DashboardState, now: Duration) -> Vec<String> {
     parts
 }
 
-/// Shown after the first Ctrl-C.
-fn cancelling_hint(state: &DashboardState) -> Option<String> {
-    state
-        .cancelling
-        .then(|| "stopping (Ctrl-C again to quit)".to_string())
+/// `prefix` and `text`, preceded by a yellow hint after the first Ctrl-C. The hint comes
+/// first so that a narrow terminal cuts the end of the line, never the hint.
+fn hinted_line(state: &DashboardState, prefix: &str, text: String) -> Line<'static> {
+    let mut spans = vec![Span::raw(prefix.to_string())];
+    if state.cancelling {
+        spans.push(Span::styled(
+            "stopping (Ctrl-C again to quit)",
+            fg(Color::Yellow),
+        ));
+        spans.push(Span::raw(" · "));
+    }
+    spans.push(Span::raw(text));
+    Line::from(spans)
 }
 
 /// `⠋ Transcribe · 5/8 chunks · 4.0× realtime · $0.0200 · 1:10`
-fn compact_line(state: &DashboardState, now: Duration, spinner: char) -> String {
+fn compact_line(state: &DashboardState, now: Duration, spinner: char) -> Line<'static> {
     let mut parts: Vec<String> = state
         .current_stage()
         .map(|stage| stage.label().to_string())
@@ -422,8 +429,7 @@ fn compact_line(state: &DashboardState, now: Duration, spinner: char) -> String 
         .collect();
     parts.extend(stats_parts(state, now));
     parts.push(fmt_clock(now.as_secs_f64()));
-    parts.extend(cancelling_hint(state));
-    format!("{spinner} {}", parts.join(" · "))
+    hinted_line(state, &format!("{spinner} "), parts.join(" · "))
 }
 
 #[cfg(test)]
@@ -591,13 +597,13 @@ mod tests {
 
     #[test]
     fn cancelling_hint_in_stats_line() {
-        let mut st = state_with_plan(2);
-        assert!(!draw(&st, 100, 17, s(1)).join("\n").contains("stopping"));
-        st.apply(&Event::Cancelling, s(1));
-        let lines = draw(&st, 100, 17, s(1)).join("\n");
-        assert!(lines.contains("elapsed 0:01 · stopping (Ctrl-C again to quit)"));
-        let compact = draw(&st, 80, 1, s(1));
-        assert!(compact[0].contains("0/2 chunks · 0:01 · stopping (Ctrl-C again to quit)"));
+        let mut st = mockup_state();
+        assert!(!draw(&st, 80, 17, s(70)).join("\n").contains("stopping"));
+        st.apply(&Event::Cancelling, s(70));
+        let lines = draw(&st, 80, 17, s(70)).join("\n");
+        assert!(lines.contains("stopping (Ctrl-C again to quit) · 5/8 chunks"));
+        let compact = draw(&st, 60, 1, s(70));
+        assert!(compact[0].contains("⠋ stopping (Ctrl-C again to quit) · Transcribe"));
     }
 
     /// Column (in chars) where `needle` starts on the line containing `row`.

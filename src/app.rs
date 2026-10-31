@@ -460,13 +460,11 @@ async fn run_job(
         provider_options: provider_options.clone(),
     };
     let parallel = parallelism(r.provider.kind, r.jobs, available_cores(), GPU_BUILD);
-    // A local model is identified by its file name and size, so replacing the
-    // file invalidates the cache without hashing it.
     let (cache_base_url, cache_model) = match &backend {
         Backend::Api { base_url, .. } => (base_url.clone(), r.model.clone()),
         Backend::Local { model_path } => (
             "local".to_string(),
-            format!("{}#{}", r.model, std::fs::metadata(model_path)?.len()),
+            local_model_identity(&r.model, model_path)?,
         ),
     };
     let req = RunRequest {
@@ -509,6 +507,19 @@ async fn run_job(
     warnings.append(&mut summary.warnings);
     summary.warnings = warnings;
     Ok(Outcome::Done(summary))
+}
+
+/// How the cache identifies a local model: `<file name>#<size>#<mtime>`, the
+/// modification time in seconds since the epoch (0 if unknown). Replacing the
+/// file invalidates the cache without hashing it.
+fn local_model_identity(name: &str, model_path: &Path) -> std::io::Result<String> {
+    let meta = std::fs::metadata(model_path)?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    Ok(format!("{name}#{}#{mtime}", meta.len()))
 }
 
 /// Called with the language code when the local backend pins the language it detected.
@@ -771,6 +782,31 @@ mod tests {
         let cli = Cli::try_parse_from(["srtty", "a.mp4"].iter().chain(flags)).unwrap();
         let r = config::resolve(cfg, &cli, &|k| (k == "K").then(|| "secret".into())).unwrap();
         check_settings(&r)
+    }
+
+    #[test]
+    fn local_model_identity_follows_size_and_mtime() {
+        use std::time::{Duration, SystemTime};
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let write = |dir: &tempfile::TempDir, secs: u64| {
+            let path = dir.path().join("ggml-base.bin");
+            std::fs::write(&path, b"lmgg-same-size").unwrap();
+            let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+            path
+        };
+        let (first, second) = (write(&a, 1_700_000_000), write(&b, 1_800_000_000));
+        let first_id = local_model_identity("ggml-base.bin", &first).unwrap();
+        assert_eq!(first_id, "ggml-base.bin#14#1700000000");
+        assert_ne!(
+            first_id,
+            local_model_identity("ggml-base.bin", &second).unwrap()
+        );
     }
 
     #[test]

@@ -10,10 +10,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::layout::Size;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Rect, Size};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::dashboard::state::DashboardState;
@@ -64,6 +65,9 @@ struct Inner<B: Backend> {
     state: DashboardState,
     suspended: bool,
     finished: bool,
+    /// A viewport failed to open mid-run: stop drawing rather than query a
+    /// terminal that does not answer on every tick.
+    broken: bool,
 }
 
 impl<B: Backend + Send + 'static> Dashboard<B> {
@@ -83,6 +87,7 @@ impl<B: Backend + Send + 'static> Dashboard<B> {
                 state,
                 suspended: false,
                 finished: false,
+                broken: false,
             }),
             started: Instant::now(),
             ticker: Mutex::new(None),
@@ -91,8 +96,13 @@ impl<B: Backend + Send + 'static> Dashboard<B> {
         Ok(dashboard)
     }
 
-    /// Redraws every `every` on a background thread until `finish`.
+    /// Redraws every `every` on a background thread until `finish`. Does nothing
+    /// once finished or if a ticker already runs.
     pub fn start_ticker(self: &Arc<Self>, every: Duration) {
+        let mut ticker = lock(&self.ticker);
+        if ticker.is_some() || lock(&self.inner).finished {
+            return;
+        }
         let (stop, ticks) = mpsc::channel::<()>();
         // A weak handle, so that the ticker alone does not keep the dashboard alive.
         let dashboard = Arc::downgrade(self);
@@ -104,7 +114,7 @@ impl<B: Backend + Send + 'static> Dashboard<B> {
                 }
             }
         });
-        *lock(&self.ticker) = Some((stop, handle));
+        *ticker = Some((stop, handle));
     }
 
     /// Draws one frame now.
@@ -116,7 +126,7 @@ impl<B: Backend + Send + 'static> Dashboard<B> {
 
 impl<B: Backend> Inner<B> {
     fn draw(&mut self, now: Duration) {
-        if self.suspended || self.finished {
+        if self.suspended || self.finished || self.broken {
             return;
         }
         let Ok(size) = (self.screen.size)() else {
@@ -131,6 +141,7 @@ impl<B: Backend> Inner<B> {
                 erase(terminal);
             }
             self.terminal = (self.screen.open)(height).ok();
+            self.broken = self.terminal.is_none();
         }
         let Some(terminal) = self.terminal.as_mut() else {
             return;
@@ -152,6 +163,10 @@ impl<B: Backend + Send + 'static> Reporter for Dashboard<B> {
 
     fn suspend(&self) {
         let mut inner = lock(&self.inner);
+        // After the run, the screen below the erased viewport belongs to the recap.
+        if inner.finished {
+            return;
+        }
         if let Some(mut terminal) = inner.terminal.take() {
             erase(&mut terminal);
         }
@@ -211,16 +226,36 @@ fn erase<B: Backend>(terminal: &mut Terminal<B>) {
     let _ = terminal.show_cursor();
 }
 
-/// Prints each warning on its own line above the viewport, where it stays in
-/// the terminal history.
+/// Prints each warning above the viewport, wrapped to the terminal width, where
+/// it stays in the terminal history.
 fn print_warnings<B: Backend>(terminal: &mut Terminal<B>, warnings: Vec<String>) {
+    let width = terminal.get_frame().area().width;
     for message in warnings {
-        let line = Line::from(vec![
+        let paragraph = Paragraph::new(Line::from(vec![
             Span::styled("warning:", Style::default().fg(Color::Yellow)),
             Span::raw(format!(" {message}")),
-        ]);
-        let _ = terminal.insert_before(1, |buf| line.render(buf.area, buf));
+        ]))
+        .wrap(Wrap { trim: true });
+        let height = wrapped_height(&paragraph, width, message.chars().count());
+        let _ = terminal.insert_before(height, |buf| paragraph.render(buf.area, buf));
     }
+}
+
+/// Rows `paragraph` takes at `width`, found by rendering it into a scratch
+/// buffer (`Paragraph::line_count` needs an unstable Ratatui feature).
+fn wrapped_height(paragraph: &Paragraph, width: u16, chars: usize) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+    // Every row holds at least one character; the prefix adds a few more.
+    let rows = u16::try_from(chars + "warning: ".len()).unwrap_or(u16::MAX);
+    let area = Rect::new(0, 0, width, rows);
+    let mut buf = Buffer::empty(area);
+    paragraph.render(area, &mut buf);
+    (0..rows)
+        .rev()
+        .find(|&y| (0..width).any(|x| buf[(x, y)].symbol() != " "))
+        .map_or(1, |y| y + 1)
 }
 
 #[cfg(test)]
@@ -256,6 +291,7 @@ mod tests {
     use super::*;
     use crate::report::{Event, Reporter, Stage};
     use ratatui::backend::TestBackend;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn test_screen(w: u16, h: u16) -> Screen<TestBackend> {
         Screen {
@@ -327,5 +363,72 @@ mod tests {
         assert!(!d.screen_text().contains("srtty ·"));
         d.event(&Event::StageStarted(Stage::Split)); // after finish: no redraw
         assert!(!d.screen_text().contains("srtty ·"));
+    }
+
+    #[test]
+    fn suspend_after_finish_keeps_the_screen() {
+        let d = Dashboard::open(test_screen(80, 40), "a".into(), "m".into()).unwrap();
+        d.finish();
+        d.suspend();
+        assert_eq!(d.viewport_height(), Some(6)); // not erased and released again
+    }
+
+    #[test]
+    fn a_failed_reopen_leaves_the_dashboard_dark() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&opens);
+        let screen = Screen {
+            size: Box::new(|| Ok(Size::new(80, 40))),
+            open: Box::new(move |height| {
+                if counted.fetch_add(1, Ordering::SeqCst) > 0 {
+                    return Err(std::io::Error::other("no cursor position"));
+                }
+                Terminal::with_options(
+                    TestBackend::new(80, 40),
+                    TerminalOptions {
+                        viewport: Viewport::Inline(height),
+                    },
+                )
+                .map_err(|e| match e {})
+            }),
+        };
+        let d = Dashboard::open(screen, "a".into(), "m".into()).unwrap();
+        d.event(&Event::ChunksPlanned(
+            (0..8).map(|i| (i as f64, i as f64 + 1.0)).collect(),
+        ));
+        d.draw();
+        d.draw();
+        d.event(&Event::StageStarted(Stage::Split));
+        assert_eq!(opens.load(Ordering::SeqCst), 2);
+        assert_eq!(d.viewport_height(), None);
+    }
+
+    #[test]
+    fn ticker_starts_once_and_never_after_finish() {
+        let ticker_id = |d: &Dashboard<TestBackend>| {
+            lock(&d.ticker)
+                .as_ref()
+                .map(|(_, handle)| handle.thread().id())
+        };
+        let d = Dashboard::open(test_screen(80, 40), "a".into(), "m".into()).unwrap();
+        d.start_ticker(TICK);
+        let first = ticker_id(&d);
+        assert!(first.is_some());
+        d.start_ticker(TICK);
+        assert_eq!(ticker_id(&d), first);
+        d.finish();
+        d.start_ticker(TICK);
+        assert_eq!(ticker_id(&d), None);
+    }
+
+    #[test]
+    fn long_warnings_wrap() {
+        let d = Dashboard::open(test_screen(80, 40), "a".into(), "m".into()).unwrap();
+        let message = format!("{} zebra", "word ".repeat(23));
+        assert_eq!(message.len(), 121);
+        d.event(&Event::Warning(message));
+        let text = d.screen_text();
+        assert_eq!(text.matches("warning: word").count(), 1);
+        assert!(text.contains("zebra"));
     }
 }

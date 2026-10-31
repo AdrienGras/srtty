@@ -675,3 +675,22 @@ Tâche du contrôleur, pas d'un sous-agent : elle dépense des crédits. **Coût
 - [ ] **Step 3 : écrire `docs/validation/2026-10-31-plan3.md`** : les captures utiles, le coût réel, les écarts constatés.
 - [ ] **Step 4 : mettre à jour `docs/HANDOFF.md`** : état courant, historique, décisions de ce plan, points reportés (plan 4 : backend local whisper-rs). Retirer les deux décisions ouvertes : seuil de diarisation gardé à 2 voix, et rétrogradation après deux échecs (Task 8).
 - [ ] **Step 5 : commit** `docs: plan 3 validation and handoff`, puis une PR en français (Résumé, Tests, Limites connues), liée et surveillée. Ne pas merger.
+
+---
+
+## Écarts décidés pendant l'exécution
+
+Ces écarts ont été décidés pendant l'exécution, à partir des relectures par tâche, de la revue finale de la branche et de la validation réelle. Ils priment sur le texte des tâches ci-dessus.
+
+- **`MIN_WIDTH` = 53**, et non 40 (décision 7). C'est la plus petite largeur où la ligne d'étapes tient entière avec des séparateurs d'un espace. La ligne utilise trois espaces quand la largeur le permet, un seul sinon.
+- **Colonne de détails alignée** dans la liste des morceaux, sur la plus longue étiquette des lignes qui ont un détail (terminées ou en retry).
+- **Ligne de résumé de la liste** : le côté vide est omis (`… 4 below`, pas `… 0 above, 4 below`).
+- **Indication `stopping (Ctrl-C again to quit)`** en tête de la ligne de stats et de la ligne compacte, en jaune, et non en fin de ligne : en fin de ligne, elle était coupée à 80 colonnes.
+- **Runtime** :
+  - `suspend` et `start_ticker` ne font rien après `finish` ;
+  - une réouverture ratée du viewport éteint le tableau de bord pour le reste du run, au lieu de réinterroger le terminal à chaque image ;
+  - les avertissements longs passent à la ligne ;
+  - `Cancelling` ne rouvre pas un tableau de bord suspendu (question de coût en cours) ;
+  - l'effacement ne passe plus par `Terminal::clear()`, qui interroge la position du curseur : curseur ramené à l'origine du viewport, `ClearType::AfterCursor`, puis curseur réaffiché.
+- **Signaux** : SIGTERM est traité comme Ctrl-C (premier signal : arrêt propre ; second : sortie forcée), pour que `timeout` rende le curseur. SIGHUP n'est pas écouté, pour que `nohup` continue de protéger les longs runs. Le flux de signaux est créé avant le reporter.
+- **Sortie forcée avec `--json`** : `{"error":"interrupted","exit_code":130}` sur stdout.

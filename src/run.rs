@@ -25,6 +25,8 @@ use crate::transcribe::{
 pub(crate) const SILENCE_WINDOW_S: f64 = 30.0;
 /// Attempts per chunk on transient failures, the first one included.
 const MAX_ATTEMPTS: u32 = 4;
+/// Retries per chunk, the first attempt excluded.
+pub const MAX_RETRIES: u32 = MAX_ATTEMPTS - 1;
 /// Longest wait between two attempts, in seconds.
 const MAX_BACKOFF_S: f64 = 30.0;
 
@@ -369,7 +371,7 @@ fn approximate_unusable(chunk: &AudioChunk, t: &mut Transcript) -> Option<String
     ))
 }
 
-fn mm_ss(s: f64) -> String {
+pub(crate) fn mm_ss(s: f64) -> String {
     let secs = s.max(0.0) as u64;
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }

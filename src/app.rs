@@ -2,10 +2,11 @@
 //! `setup`, or a transcription run with its checks, dry run and cost confirmation.
 
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use ratatui::crossterm::style::Stylize;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
@@ -13,7 +14,11 @@ use crate::assemble::CueRules;
 use crate::cache::{CacheParams, ChunkCache};
 use crate::cli::{Cli, Command, CompatAction, ConfigAction};
 use crate::compat::{CompatEntry, CompatList, compat_url, estimate_cost_usd, provider_key};
-use crate::config::{self, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig};
+use crate::config::{
+    self, ApiKey, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig,
+};
+use crate::dashboard::recap::recap_lines;
+use crate::dashboard::{Dashboard, DisplayMode, TICK, display_mode, stderr_screen};
 use crate::error::SrttyError;
 use crate::media::plan_chunks;
 use crate::output::speaker_prefix_reserve;
@@ -231,6 +236,26 @@ pub(crate) fn print_stdout(text: &str) -> Result<(), SrttyError> {
     Ok(())
 }
 
+/// What a run needs once its settings are checked.
+struct Job {
+    input: PathBuf,
+    r: Resolved,
+    api_key: ApiKey,
+    base_url: String,
+}
+
+/// How a run ended, before anything is printed.
+enum Outcome {
+    DryRun {
+        plan: Vec<(f64, f64)>,
+        estimate: Option<f64>,
+    },
+    Done(Summary),
+}
+
+/// A transcription run: checks the settings, shows progress in the chosen
+/// display mode, and erases any live display before printing the outcome or
+/// returning an error.
 async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     let started = Instant::now();
     let input = cli.input.clone().ok_or_else(|| {
@@ -249,16 +274,112 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
             r.provider_name
         ))
     })?;
+
+    // Before the dashboard opens: an error here must not leave it on screen.
+    let signals = stop_signals()?;
+    let mut mode = display_mode(
+        cli.quiet,
+        cli.json,
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+        &|name| std::env::var(name).ok(),
+    );
+    let reporter: Arc<dyn Reporter> = match mode {
+        DisplayMode::Quiet => Arc::new(PlainReporter::new(Box::new(std::io::sink()))),
+        DisplayMode::Plain => Arc::new(PlainReporter::new(Box::new(std::io::stderr()))),
+        DisplayMode::Dashboard => {
+            match Dashboard::open(stderr_screen(), input_name(&input), r.model.clone()) {
+                Ok(dashboard) => {
+                    dashboard.start_ticker(TICK);
+                    dashboard
+                }
+                // The terminal could not host the viewport.
+                Err(_) => {
+                    mode = DisplayMode::Plain;
+                    Arc::new(PlainReporter::new(Box::new(std::io::stderr())))
+                }
+            }
+        }
+    };
+
+    let cancel = CancellationToken::new();
+    tokio::spawn(on_interrupts(
+        signals,
+        {
+            let (cancel, reporter) = (cancel.clone(), Arc::clone(&reporter));
+            move || {
+                cancel.cancel();
+                reporter.event(&Event::Cancelling);
+            }
+        },
+        {
+            let (reporter, json) = (Arc::clone(&reporter), cli.json);
+            move || {
+                reporter.finish();
+                let code = SrttyError::Interrupted.exit_code();
+                if json {
+                    // Same shape as the error report of `main`.
+                    let report = serde_json::json!({ "error": "interrupted", "exit_code": code });
+                    let _ = print_stdout(&report.to_string());
+                } else {
+                    eprintln!("interrupted");
+                }
+                std::process::exit(code);
+            }
+        },
+    ));
+    let job = Job {
+        input,
+        r,
+        api_key,
+        base_url,
+    };
+    let outcome = run_job(&cli, job, Arc::clone(&reporter), cancel, started).await;
+    reporter.finish();
+
+    match outcome? {
+        Outcome::DryRun { plan, estimate } => print_dry_run(&plan, estimate, cli.json),
+        Outcome::Done(summary) if cli.json => {
+            print_stdout(&serde_json::to_string(&summary).map_err(std::io::Error::from)?)
+        }
+        Outcome::Done(summary) => match mode {
+            DisplayMode::Dashboard => print_recap(&summary),
+            DisplayMode::Plain => {
+                eprintln!("{}", summary_line(&summary));
+                Ok(())
+            }
+            DisplayMode::Quiet => Ok(()),
+        },
+    }
+}
+
+/// The input file name shown in the dashboard title, or the whole path if it has none.
+fn input_name(input: &Path) -> String {
+    input.file_name().map_or_else(
+        || input.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// Everything from extraction to the written files. Prints nothing itself
+/// beyond progress events and the cost question.
+async fn run_job(
+    cli: &Cli,
+    job: Job,
+    reporter: Arc<dyn Reporter>,
+    cancel: CancellationToken,
+    started: Instant,
+) -> Result<Outcome, SrttyError> {
+    let Job {
+        input,
+        r,
+        api_key,
+        base_url,
+    } = job;
     let cache_dir = paths::cache_dir();
     let compat = CompatList::load(&cache_dir);
     let entry = provider_key(&base_url).and_then(|provider| compat.find(provider, &r.model));
 
-    let progress: Box<dyn Write + Send> = if cli.quiet {
-        Box::new(std::io::sink())
-    } else {
-        Box::new(std::io::stderr())
-    };
-    let reporter: Arc<dyn Reporter> = Arc::new(PlainReporter::new(progress));
     let mut warnings = Vec::new();
     if r.prompt.is_some()
         && r.provider.request_mode == RequestMode::Multipart
@@ -269,8 +390,6 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         warnings.push(warning);
     }
 
-    let cancel = CancellationToken::new();
-    cancel_on_ctrl_c(cancel.clone());
     let prep = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(SrttyError::Interrupted),
@@ -296,14 +415,18 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
                 SILENCE_WINDOW_S,
             )
         });
-        return print_dry_run(&plan, estimate, cli.json);
+        return Ok(Outcome::DryRun { plan, estimate });
     }
 
     let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let (threshold, yes) = (r.confirm_above_usd, cli.yes);
+    let asker = Arc::clone(&reporter);
     // The answer is read on a blocking thread so that Ctrl-C still interrupts the prompt.
     let decision = tokio::task::spawn_blocking(move || {
-        confirm_cost(estimate, threshold, yes, interactive, &mut ask_on_terminal)
+        confirm_cost(estimate, threshold, yes, interactive, &mut |usd| {
+            asker.suspend();
+            ask_on_terminal(usd)
+        })
     });
     tokio::select! {
         biased;
@@ -340,29 +463,49 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         api_key,
         r.model,
         r.provider.request_mode,
-    ));
+    )?);
     let mut summary = run(prep, req, transcriber, reporter, cancel).await?;
     summary.elapsed_s = started.elapsed().as_secs_f64();
     warnings.append(&mut summary.warnings);
     summary.warnings = warnings;
-
-    if cli.json {
-        print_stdout(&serde_json::to_string(&summary).map_err(std::io::Error::from)?)
-    } else {
-        if !cli.quiet {
-            eprintln!("{}", summary_line(&summary));
-        }
-        Ok(())
-    }
+    Ok(Outcome::Done(summary))
 }
 
-/// Cancels `cancel` on the first Ctrl-C.
-fn cancel_on_ctrl_c(cancel: CancellationToken) {
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            cancel.cancel();
-        }
-    });
+/// SIGINT and SIGTERM as one stream: `kill` or `timeout` stop the run like
+/// Ctrl-C, so the dashboard is erased. SIGHUP is left alone, so that `nohup`
+/// keeps working (a handler would replace its ignore disposition), and SIGQUIT
+/// keeps its default behavior.
+fn stop_signals() -> std::io::Result<impl futures::Stream<Item = ()> + Unpin> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let streams = [SignalKind::interrupt(), SignalKind::terminate()]
+        .into_iter()
+        .map(|kind| {
+            let sig = signal(kind)?;
+            Ok(Box::pin(futures::stream::unfold(
+                sig,
+                |mut sig| async move { sig.recv().await.map(|()| ((), sig)) },
+            )))
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    Ok(futures::stream::select_all(streams))
+}
+
+/// Runs `first` on the first item of `signals` and `second` on the next one.
+///
+/// A forced exit (`second`) skips the normal cleanup: temporary files, such as
+/// the extracted audio or the `.tmp` of a write in progress, may be left behind.
+pub(crate) async fn on_interrupts<S>(mut signals: S, first: impl FnOnce(), second: impl FnOnce())
+where
+    S: futures::Stream<Item = ()> + Unpin,
+{
+    use futures::StreamExt;
+    if signals.next().await.is_none() {
+        return;
+    }
+    first();
+    if signals.next().await.is_some() {
+        second();
+    }
 }
 
 /// Asks on stderr whether to spend about `estimate_usd`, reading the answer from stdin.
@@ -409,6 +552,18 @@ fn print_dry_run(plan: &[(f64, f64)], estimate: Option<f64>, json: bool) -> Resu
     Ok(())
 }
 
+/// Prints the dashboard recap on stderr, with a green check mark.
+fn print_recap(s: &Summary) -> Result<(), SrttyError> {
+    let mut err = std::io::stderr().lock();
+    for line in recap_lines(s) {
+        match line.strip_prefix('✔') {
+            Some(rest) => writeln!(err, "{}{rest}", "✔".green())?,
+            None => writeln!(err, "{line}")?,
+        }
+    }
+    Ok(())
+}
+
 fn summary_line(s: &Summary) -> String {
     let files = s
         .files
@@ -427,6 +582,44 @@ fn summary_line(s: &Summary) -> String {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn first_interrupt_cancels_second_forces() {
+        let (tx, rx) = futures::channel::mpsc::unbounded::<()>();
+        let (first, second) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (f, s) = (first.clone(), second.clone());
+        let task = tokio::spawn(on_interrupts(
+            rx,
+            move || {
+                f.fetch_add(1, SeqCst);
+            },
+            move || {
+                s.fetch_add(1, SeqCst);
+            },
+        ));
+        tx.unbounded_send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!((first.load(SeqCst), second.load(SeqCst)), (1, 0));
+        tx.unbounded_send(()).unwrap();
+        task.await.unwrap();
+        assert_eq!((first.load(SeqCst), second.load(SeqCst)), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn terminate_counts_as_an_interrupt() {
+        use futures::StreamExt;
+        let mut signals = stop_signals().unwrap();
+        // SIGTERM only: nothing handles SIGHUP, which would kill the test binary.
+        let sent = std::process::Command::new("kill")
+            .args(["-TERM", &std::process::id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        let got = tokio::time::timeout(Duration::from_secs(5), signals.next()).await;
+        assert_eq!(got, Ok(Some(())));
+    }
 
     #[test]
     fn preflight_rules() {

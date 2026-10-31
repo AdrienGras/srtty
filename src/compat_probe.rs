@@ -10,7 +10,7 @@ use async_trait::async_trait;
 
 use crate::cli::ProbeArgs;
 use crate::compat::{
-    COMPAT_SCHEMA, CompatEntry, CompatList, CompatStatus, parse_compat, utc_today,
+    COMPAT_SCHEMA, CompatEntry, CompatList, CompatStatus, FailedProbe, parse_compat, utc_today,
 };
 use crate::config::{ApiKey, RequestMode, check_key_var_name};
 use crate::error::SrttyError;
@@ -57,6 +57,9 @@ pub struct ProbeReport {
     pub probed: Vec<String>,
     /// Models whose previous entry was kept (if any), with the reason.
     pub kept: Vec<(String, String)>,
+    /// Models whose conclusive probe this run found unusable or incompatible,
+    /// whether they were demoted or put on probation.
+    pub failed: Vec<String>,
     pub budget_exhausted: bool,
 }
 
@@ -119,13 +122,9 @@ fn per_hour(usd_per_s: Option<f64>) -> Option<f64> {
 const DEMOTION_MIN_MODELS: usize = 4;
 
 /// Refuses a run in which more than half of the previously compatible models
-/// probed conclusively are now incompatible or unusable: a broken endpoint or
-/// sample is likelier than a mass regression.
-fn check_demotions(
-    previous: &CompatList,
-    new: &CompatList,
-    report: &ProbeReport,
-) -> Result<(), SrttyError> {
+/// probed conclusively failed their probe, demoted or put on probation: a
+/// broken endpoint or sample is likelier than a mass regression.
+fn check_demotions(previous: &CompatList, report: &ProbeReport) -> Result<(), SrttyError> {
     let conclusive = |id: &str| {
         report.probed.iter().any(|p| p == id) && !report.kept.iter().any(|(k, _)| k == id)
     };
@@ -138,12 +137,7 @@ fn check_demotions(
         .collect();
     let failed = checked
         .iter()
-        .filter(|id| {
-            matches!(
-                new.find(PROVIDER, id).map(|e| e.status),
-                Some(CompatStatus::Incompatible | CompatStatus::Unusable)
-            )
-        })
+        .filter(|id| report.failed.iter().any(|f| f == *id))
         .count();
     let total = checked.len();
     if total >= DEMOTION_MIN_MODELS && failed * 2 > total {
@@ -220,6 +214,24 @@ pub async fn probe_all(
             Verdict::Unusable => (CompatStatus::Unusable, false, false),
             Verdict::Incompatible => (CompatStatus::Incompatible, false, false),
         };
+        if status != CompatStatus::Compatible {
+            report.failed.push(id.to_string());
+            // A compatible model's first failure only puts it on probation.
+            if let Some(old) =
+                old.filter(|e| e.status == CompatStatus::Compatible && e.failed_probe.is_none())
+            {
+                models.push(CompatEntry {
+                    usd_per_hour: per_hour(Some(rate)),
+                    checked_at: Some(policy.today.clone()),
+                    failed_probe: Some(FailedProbe {
+                        status,
+                        checked_at: policy.today.clone(),
+                    }),
+                    ..old.clone()
+                });
+                continue;
+            }
+        }
 
         let mut diarization = None;
         if words {
@@ -257,6 +269,7 @@ pub async fn probe_all(
             diarization,
             usd_per_hour: per_hour(Some(rate)),
             checked_at: Some(policy.today.clone()),
+            failed_probe: None,
         });
     }
 
@@ -283,7 +296,7 @@ struct LiveProber {
 }
 
 impl LiveProber {
-    fn transcriber(&self, model: &str) -> OpenAiCompatible {
+    fn transcriber(&self, model: &str) -> Result<OpenAiCompatible, TranscribeError> {
         OpenAiCompatible::new(
             self.base_url.clone(),
             self.key.clone(),
@@ -315,7 +328,7 @@ impl LiveProber {
 #[async_trait]
 impl Prober for LiveProber {
     async fn probe(&self, model: &str) -> Result<ProbeOutcome, TranscribeError> {
-        let t = self.transcriber(model);
+        let t = self.transcriber(model)?;
         let outcome = probe_model(&t, &self.sample.chunk, &self.reporter).await?;
         self.add_cost(model, outcome.cost_usd, SAMPLE_S);
         Ok(outcome)
@@ -330,11 +343,20 @@ impl Prober for LiveProber {
         model: &str,
         option: &serde_json::Value,
     ) -> Result<(Option<bool>, Option<f64>), TranscribeError> {
-        let t = self.transcriber(model);
+        let t = self.transcriber(model)?;
         let result =
             probe_diarization(&t, &self.speakers_sample.chunk, option, &self.reporter).await?;
         self.add_cost(model, result.1, SPEAKERS_SAMPLE_S);
         Ok(result)
+    }
+}
+
+/// How `status` is written in `compat.json` and in the command's output.
+fn status_name(status: CompatStatus) -> &'static str {
+    match status {
+        CompatStatus::Compatible => "compatible",
+        CompatStatus::Unusable => "unusable",
+        CompatStatus::Incompatible => "incompatible",
     }
 }
 
@@ -350,14 +372,16 @@ fn model_line(
         Some((_, why)) => format!("skipped ({why})"),
         None => {
             let entry = new.find(PROVIDER, id);
-            let status = match entry.map(|e| e.status) {
-                Some(CompatStatus::Compatible) => "compatible",
-                Some(CompatStatus::Unusable) => "unusable",
-                Some(CompatStatus::Incompatible) => "incompatible",
-                None => "kept (no entry)",
-            };
-            let speakers = entry.is_some_and(|e| e.diarization.is_some());
-            format!("{status}{}", if speakers { ", speakers" } else { "" })
+            match entry.and_then(|e| e.failed_probe.as_ref()) {
+                Some(failed) => {
+                    format!("compatible, on probation ({})", status_name(failed.status))
+                }
+                None => {
+                    let status = entry.map_or("kept (no entry)", |e| status_name(e.status));
+                    let speakers = entry.is_some_and(|e| e.diarization.is_some());
+                    format!("{status}{}", if speakers { ", speakers" } else { "" })
+                }
+            }
         }
     };
     match cost {
@@ -449,7 +473,7 @@ pub async fn run(args: &ProbeArgs) -> Result<(), SrttyError> {
         "spent ${:.4} of ${:.2}",
         report.spent_usd, policy.budget_usd
     )?;
-    check_demotions(&previous, &new, &report)?;
+    check_demotions(&previous, &report)?;
     if same_content(&new, &previous) {
         writeln!(err, "compat.json unchanged")?;
     } else {
@@ -549,6 +573,7 @@ mod tests {
             diarization: None,
             usd_per_hour: Some(1.0),
             checked_at: Some("2020-01-01".into()),
+            failed_probe: None,
         }
     }
 
@@ -941,6 +966,8 @@ mod tests {
     async fn diarization_is_dropped_when_words_are_gone() {
         let mut old_unusable = entry("openrouter", "a/unusable", CompatStatus::Compatible);
         old_unusable.diarization = Some(json!({"p": {"diarize": true}}));
+        // Already on probation: this failure demotes.
+        old_unusable.failed_probe = on_probation(CompatStatus::Unusable);
         let mut old_flat = old_unusable.clone();
         old_flat.id = "b/flat".into();
         let mut old_incompatible = old_unusable.clone();
@@ -1082,35 +1109,26 @@ mod tests {
     }
 
     /// A run where the `failed` first of `compatible` previously compatible
-    /// models came back incompatible, and the others compatible.
-    fn demotions(compatible: usize, failed: usize) -> (CompatList, CompatList, ProbeReport) {
+    /// models failed their probe, and the others passed.
+    fn demotions(compatible: usize, failed: usize) -> (CompatList, ProbeReport) {
         let ids: Vec<String> = (0..compatible).map(|i| format!("m/{i}")).collect();
         let previous = list(
             ids.iter()
                 .map(|id| entry("openrouter", id, CompatStatus::Compatible))
                 .collect(),
         );
-        let mut new = previous.clone();
-        for (i, e) in new.models.iter_mut().enumerate() {
-            if i < failed {
-                e.status = if i % 2 == 0 {
-                    CompatStatus::Incompatible
-                } else {
-                    CompatStatus::Unusable
-                };
-            }
-        }
         let report = ProbeReport {
+            failed: ids[..failed].to_vec(),
             probed: ids,
             ..Default::default()
         };
-        (previous, new, report)
+        (previous, report)
     }
 
     #[test]
     fn mass_demotion_leaves_the_list_alone() {
-        let (previous, new, report) = demotions(4, 3);
-        let err = check_demotions(&previous, &new, &report).unwrap_err();
+        let (previous, report) = demotions(4, 3);
+        let err = check_demotions(&previous, &report).unwrap_err();
         assert!(matches!(err, SrttyError::Network(_)), "{err}");
         assert_eq!(
             err.to_string(),
@@ -1119,29 +1137,211 @@ mod tests {
         assert_eq!(err.exit_code(), 2);
 
         // Half is not more than half.
-        let (previous, new, report) = demotions(4, 2);
-        assert!(check_demotions(&previous, &new, &report).is_ok());
+        let (previous, report) = demotions(4, 2);
+        assert!(check_demotions(&previous, &report).is_ok());
         // Fewer than 4 conclusive probes of compatible models.
-        let (previous, new, report) = demotions(3, 3);
-        assert!(check_demotions(&previous, &new, &report).is_ok());
+        let (previous, report) = demotions(3, 3);
+        assert!(check_demotions(&previous, &report).is_ok());
     }
 
     #[test]
     fn mass_demotion_counts_only_conclusive_probes_of_compatible_models() {
         // 5 failures of 6, but one was inconclusive (kept) and one was not
         // probed: 3 of 4 counted.
-        let (previous, new, mut report) = demotions(6, 5);
+        let (previous, mut report) = demotions(6, 5);
         report.kept.push(("m/0".into(), "HTTP 503".into()));
         report.probed.retain(|id| id != "m/1");
-        let err = check_demotions(&previous, &new, &report).unwrap_err();
+        let err = check_demotions(&previous, &report).unwrap_err();
         assert_eq!(
             err.to_string(),
             "3 of 4 compatible models failed this run; compat.json left unchanged"
         );
         // Previously unusable models do not count.
-        let (mut previous, new, report) = demotions(4, 3);
+        let (mut previous, report) = demotions(4, 3);
         previous.models[0].status = CompatStatus::Unusable;
-        assert!(check_demotions(&previous, &new, &report).is_ok());
+        assert!(check_demotions(&previous, &report).is_ok());
+    }
+
+    fn on_probation(status: CompatStatus) -> Option<FailedProbe> {
+        Some(FailedProbe {
+            status,
+            checked_at: "2030-04-29".into(),
+        })
+    }
+
+    #[tokio::test]
+    async fn first_failure_puts_a_compatible_model_on_probation() {
+        let prober = FakeProber {
+            outcomes: HashMap::from([("a/x".into(), outcome(Verdict::Unusable))]),
+            tags: tag(&[("a/x", &["xai/fp8"])]),
+            diarization: HashMap::from([("a/x".into(), (Some(false), None))]),
+            ..Default::default()
+        };
+        let mut old = entry("openrouter", "a/x", CompatStatus::Compatible);
+        old.words = true;
+        old.diarization = Some(json!({"xai": {"diarize": true}}));
+        let previous = list(vec![old.clone()]);
+        let (new, report) = probe_all(
+            &[listed("a/x", Some(0.0001))],
+            &previous,
+            &policy(),
+            &prober,
+        )
+        .await
+        .unwrap();
+        let e = &new.models[0];
+        assert_eq!(e.status, CompatStatus::Compatible);
+        assert!(e.words);
+        assert_eq!(e.diarization, old.diarization);
+        assert_eq!(e.usd_per_hour, Some(0.36));
+        assert_eq!(e.checked_at.as_deref(), Some("2030-05-06"));
+        assert_eq!(
+            e.failed_probe,
+            Some(FailedProbe {
+                status: CompatStatus::Unusable,
+                checked_at: "2030-05-06".into()
+            })
+        );
+        assert_eq!(report.failed, ["a/x"]);
+        assert!(report.kept.is_empty());
+        assert!(!prober.calls().iter().any(|c| c.starts_with("diarize")));
+        assert_eq!(
+            model_line("a/x", &new, &report, None),
+            "a/x: compatible, on probation (unusable)"
+        );
+    }
+
+    #[tokio::test]
+    async fn second_failure_in_a_row_demotes() {
+        let prober = FakeProber {
+            outcomes: HashMap::from([("a/x".into(), outcome(Verdict::Unusable))]),
+            ..Default::default()
+        };
+        let mut old = entry("openrouter", "a/x", CompatStatus::Compatible);
+        old.words = true;
+        old.diarization = Some(json!({"xai": {"diarize": true}}));
+        old.failed_probe = on_probation(CompatStatus::Incompatible);
+        let (new, report) = probe_all(
+            &[listed("a/x", Some(0.0001))],
+            &list(vec![old]),
+            &policy(),
+            &prober,
+        )
+        .await
+        .unwrap();
+        let e = &new.models[0];
+        assert_eq!(e.status, CompatStatus::Unusable);
+        assert_eq!(e.failed_probe, None);
+        assert!(!e.words && !e.fine_segments);
+        assert_eq!(e.diarization, None);
+        assert_eq!(e.checked_at.as_deref(), Some("2030-05-06"));
+        assert_eq!(report.failed, ["a/x"]);
+        assert_eq!(model_line("a/x", &new, &report, None), "a/x: unusable");
+    }
+
+    #[tokio::test]
+    async fn usable_probe_clears_probation() {
+        let prober = FakeProber {
+            outcomes: HashMap::from([("a/x".into(), usable(true, true, None))]),
+            ..Default::default()
+        };
+        let mut old = entry("openrouter", "a/x", CompatStatus::Compatible);
+        old.failed_probe = on_probation(CompatStatus::Unusable);
+        let (new, report) = probe_all(
+            &[listed("a/x", Some(0.0001))],
+            &list(vec![old]),
+            &policy(),
+            &prober,
+        )
+        .await
+        .unwrap();
+        assert_eq!(new.models[0].status, CompatStatus::Compatible);
+        assert_eq!(new.models[0].failed_probe, None);
+        assert!(report.failed.is_empty());
+        assert_eq!(model_line("a/x", &new, &report, None), "a/x: compatible");
+    }
+
+    #[tokio::test]
+    async fn inconclusive_probe_keeps_probation() {
+        let prober = FakeProber {
+            outcomes: HashMap::from([(
+                "a/x".into(),
+                outcome(Verdict::Inconclusive("timeout".into())),
+            )]),
+            ..Default::default()
+        };
+        let mut old = entry("openrouter", "a/x", CompatStatus::Compatible);
+        old.failed_probe = on_probation(CompatStatus::Unusable);
+        let (new, report) = probe_all(
+            &[listed("a/x", Some(0.0001))],
+            &list(vec![old.clone()]),
+            &policy(),
+            &prober,
+        )
+        .await
+        .unwrap();
+        assert_eq!(new.models, [repriced(&old, Some(0.0001))]);
+        assert!(new.models[0].failed_probe.is_some());
+        assert!(report.failed.is_empty());
+        assert_eq!(report.kept, [("a/x".to_string(), "timeout".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn only_compatible_models_get_probation() {
+        let prober = FakeProber {
+            outcomes: HashMap::from([
+                ("a/new".into(), outcome(Verdict::Unusable)),
+                ("b/old".into(), outcome(Verdict::Incompatible)),
+            ]),
+            ..Default::default()
+        };
+        let previous = list(vec![entry("openrouter", "b/old", CompatStatus::Unusable)]);
+        let models = [listed("a/new", Some(0.0001)), listed("b/old", Some(0.0001))];
+        let (new, report) = probe_all(&models, &previous, &policy(), &prober)
+            .await
+            .unwrap();
+        assert_eq!(new.models[0].status, CompatStatus::Unusable);
+        assert_eq!(new.models[0].failed_probe, None);
+        assert_eq!(new.models[1].status, CompatStatus::Incompatible);
+        assert_eq!(new.models[1].failed_probe, None);
+        assert_eq!(report.failed, ["a/new", "b/old"]);
+    }
+
+    #[tokio::test]
+    async fn mass_guard_counts_first_failures() {
+        let ids = ["m/0", "m/1", "m/2", "m/3"];
+        let prober = FakeProber {
+            outcomes: HashMap::from([
+                ("m/0".into(), outcome(Verdict::Unusable)),
+                ("m/1".into(), outcome(Verdict::Unusable)),
+                ("m/2".into(), outcome(Verdict::Unusable)),
+                ("m/3".into(), usable(false, true, None)),
+            ]),
+            ..Default::default()
+        };
+        let previous = list(
+            ids.iter()
+                .map(|id| {
+                    let mut e = entry("openrouter", id, CompatStatus::Compatible);
+                    e.fine_segments = true;
+                    e
+                })
+                .collect(),
+        );
+        let models: Vec<ListedModel> = ids.iter().map(|id| listed(id, Some(0.0001))).collect();
+        let (new, report) = probe_all(&models, &previous, &policy(), &prober)
+            .await
+            .unwrap();
+        assert!(
+            new.models
+                .iter()
+                .all(|m| m.status == CompatStatus::Compatible)
+        );
+        let err = check_demotions(&previous, &report).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "3 of 4 compatible models failed this run; compat.json left unchanged"
+        );
     }
 
     #[test]

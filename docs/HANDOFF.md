@@ -4,8 +4,8 @@ Journal antéchronologique : l'état courant en haut, l'historique en bas. Mettr
 
 ## État courant (2026-10-31)
 
-- `main` = `c0e8e2d`. Plans 1 et 2 livrés et mergés (PR #1, PR #2). 241 tests (219 unitaires, 22 de bout en bout). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` sont propres.
-- Prochain travail : **plan 3**, le tableau de bord Ratatui.
+- Plans 1 et 2 livrés et mergés (PR #1, PR #2). **Plan 3 exécuté** sur `feat/plan-3-dashboard`, PR ouverte : à faire merger par Adrien. 285 tests (262 unitaires, 23 de bout en bout). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` sont propres.
+- Prochain travail : **plan 4**, le backend local whisper-rs. À démarrer depuis `main` une fois la PR du plan 3 mergée.
 - La CI hebdomadaire `compat` tourne : chaque lundi à 05:17 UTC, plus un déclenchement manuel. Premier run réussi le 2026-10-31 (0,063 $). Le secret `OPENROUTER_API_KEY` est configuré dans le dépôt.
 
 ## Documents de référence
@@ -16,8 +16,9 @@ Journal antéchronologique : l'état courant en haut, l'historique en bas. Mettr
 | `docs/PRD.md` | PRD d'origine. La conception le corrige là où ils divergent. |
 | `docs/superpowers/plans/2026-10-30-srtty-1-core.md` | Plan 1, exécuté. Son en-tête donne le découpage en 5 plans. |
 | `docs/superpowers/plans/2026-10-30-srtty-2-models-setup.md` | Plan 2, exécuté. |
+| `docs/superpowers/plans/2026-10-31-srtty-3-dashboard.md` | Plan 3, exécuté. Sa dernière section liste les écarts décidés pendant l'exécution. |
 | `docs/spikes/2026-10-30-openrouter-stt.md` (+ `docs/spikes/2026-10-30-data/`) | Mesures du spike OpenRouter. |
-| `docs/validation/2026-10-30-plan1.md`, `docs/validation/2026-10-30-plan2.md` | Validations contre la vraie API. |
+| `docs/validation/2026-10-30-plan1.md`, `docs/validation/2026-10-30-plan2.md`, `docs/validation/2026-10-31-plan3.md` | Validations contre la vraie API. Celle du plan 3 inclut des captures du tableau de bord. |
 | `assets/README.md` | Provenance des extraits audio embarqués (LibriVox, domaine public). |
 
 Ces fichiers sont gros : les lire par plages (`grep -n '^#' <fichier>`, puis Read avec offset et limit).
@@ -39,13 +40,18 @@ Ces fichiers sont gros : les lire par plages (`grep -n '^#' <fichier>`, puis Rea
 - Sous zsh, `set -- $var` ne découpe pas les mots : utiliser des tableaux ou `${p%%:*}`.
 - Médias de test (LibriVox) déjà téléchargés sur la machine : `/tmp/srtty-spike/media/barbe_bleue.mp3` et `/tmp/srtty-spike/media2/p_00.mp3` à `p_19.mp3` (scènes des Précieuses ridicules). Les URL d'origine sont dans `assets/README.md`.
 - `compat.json` est réécrit chaque semaine par la CI. Les tests qui vérifient des données de modèles lisent le fixture figé `tests/fixtures/compat_seed.json` (`test_support::compat_seed()`), jamais la liste embarquée.
+- Pour voir le tableau de bord sans vrai terminal : un pty émulé par `pyte` (installé dans le site utilisateur, donc **pas** `python3 -I`), qui répond aux requêtes `ESC [ 6 n`. Sans réponse, crossterm attend 2 s et srtty retombe sur les lignes simples. C'est ce qui se passe sous `script`. Le harnais du plan 3 est décrit dans `docs/validation/2026-10-31-plan3.md`.
 - serde_json a la feature `float_roundtrip`, et les prix écrits dans `compat.json` sont arrondis à 6 décimales. Sans ça, la sonde réécrivait le fichier à chaque run.
 
 ## Architecture en bref
 
 - Un seul crate lib + bin, en async (tokio, reqwest 0.13 rustls, clap 4.6). Rust 1.99, édition 2024.
 - Pipeline : `src/run.rs` (extraction ffmpeg en Opus 32 kbit/s, découpe sur les silences, premier morceau seul puis le reste en parallèle, retries, cache par morceau, assemblage depuis les mots, écriture atomique).
-- Affichage : trait `Reporter` (`src/report.rs`), qui reçoit des `Event`. Il y a pour l'instant une seule implémentation, `PlainReporter` (une ligne par événement sur stderr), construite dans `src/app.rs` (`transcribe`). **Le plan 3 branche le tableau de bord derrière ce trait.**
+- Affichage : trait `Reporter` (`src/report.rs`), qui reçoit des `Event` et a deux méthodes par défaut, `suspend()` (avant une question) et `finish()` (efface l'affichage vivant, appelée avant toute sortie finale). Deux implémentations :
+  - `PlainReporter` : une ligne par événement sur stderr, sans ANSI ;
+  - `Dashboard<B>` (`src/dashboard/`) : viewport inline Ratatui, avec `state.rs` (modèle pur), `view.rs` (disposition et dessin), `mod.rs` (runtime, ticker à 10 Hz, `DisplayMode`) et `recap.rs`.
+- Choix du mode dans `app.rs` (`display_mode`). `--quiet` donne le silence. `--json`, stdout ou stderr hors TTY, `NO_COLOR` non vide ou `TERM=dumb` donnent `PlainReporter`. Sinon, le tableau de bord. Raison : crossterm écrit sa requête de position du curseur sur **stdout**. Si l'ouverture du viewport échoue, on retombe sur `PlainReporter`.
+- Signaux : SIGINT et SIGTERM. Le premier annule proprement, le second force la sortie (130) après `finish()`. SIGHUP est volontairement ignoré, pour que `nohup` marche.
 - Plan 2 :
   - `src/providers.rs` : liste des modèles d'un fournisseur.
   - `src/compat.rs` : `refresh` depuis GitHub raw vers le cache, `ModelStatus`.
@@ -59,20 +65,26 @@ Ces fichiers sont gros : les lire par plages (`grep -n '^#' <fichier>`, puis Rea
 
 ## Plans restants
 
-3. **Tableau de bord Ratatui** en viewport inline, derrière `Reporter`. Voir la conception §5.9 (maquette B validée par Adrien). Il est actif en TTY seulement. Hors TTY, avec `--quiet` ou `NO_COLOR`, on garde `PlainReporter`, sans aucun code ANSI. Avec `--json`, rien sur stdout à part l'objet final. À la fin du run, la zone s'efface et laisse un récapitulatif.
 4. **Backend local whisper-rs** (feature `local`), timestamps au mot via whisper.cpp, téléchargement des modèles ggml dans `setup` (Hugging Face) vers `~/.local/share/srtty/models/`. Il remplace l'option « Local Whisper (not available in this build) » de `setup`.
 5. **Distribution** : dist (ex-cargo-dist), `cargo binstall`, Homebrew (tap `AdrienGras/homebrew-tap`, à créer par Adrien), CI des PR sous Linux et macOS (fmt, clippy, tests, build `--features local`), licences MIT OR Apache-2.0, README en anglais.
 
-## Décisions ouvertes (à poser à Adrien au début du plan 3)
+## Décisions d'Adrien (2026-10-31)
 
-1. **Seuil de diarisation de la sonde.** Le critère actuel est « au moins 2 voix distinctes » sur l'extrait de 45 s, qui en contient 5 d'après Grok. `elevenlabs/scribe-v2` le passe, alors qu'il mélangeait les personnages au spike. Faut-il passer à 3 ?
-2. **Rétrogradation sur deux runs.** Pour l'instant, une seule sonde ratée fait passer un modèle en « unusable » ou « incompatible ». Deux cas réels en deux jours : `fish-audio/transcribe-1` le 30/10, `nvidia/nemotron-3.5-transcribe` le 31/10, tous deux confirmés par une seconde sonde. Exiger deux semaines de suite protège d'un raté passager, mais retarde d'une semaine les vrais changements.
+1. **Seuil de diarisation de la sonde : gardé à 2 voix.** `elevenlabs/scribe-v2` reste « + intervenants ».
+2. **Rétrogradation sur deux runs : adoptée (plan 3, Task 8).** Un modèle compatible dont la sonde concluante échoue passe « à l'épreuve » : il reste compatible, et `compat.json` garde `failed_probe { status, checked_at }`. La sonde concluante suivante le rétrograde si elle échoue aussi, ou efface la marque si elle réussit. Une sonde non concluante ne change rien. Les nouveaux modèles et les modèles déjà rétrogradés prennent le verdict tout de suite. La garde contre une rétrogradation massive compte les échecs du run (`ProbeReport::failed`). Le premier run de la CI après le merge sera le premier à pouvoir écrire ce champ.
+
+Aucune décision ouverte pour l'instant.
 
 ## Points reportés
 
-- Plan 3 :
-  - un second Ctrl-C est avalé (le premier annule, le second devrait forcer la sortie) ;
-  - `.expect` sur `Client::builder` dans `src/transcribe/openai.rs`.
+- Mineurs du plan 3 :
+  - `wrapped_height` (`src/dashboard/mod.rs`) alloue un tampon proportionnel à la longueur de l'avertissement (quelques Mo pour un message géant) ;
+  - avec `--json`, un second signal qui tombe pendant l'écriture du JSON d'erreur par `main` peut produire deux objets (fenêtre de quelques µs) ;
+  - une entrée absente en mode tableau de bord ouvre brièvement le viewport avant l'erreur ;
+  - « interrupted » peut s'imprimer deux fois si le second Ctrl-C tombe pendant la sortie normale ;
+  - un relancement entièrement servi par le cache affiche `cost n/a` ;
+  - pas de test qui prouve que l'effacement n'interroge pas le curseur (vérifié à la lecture et en pty) ;
+  - en dessous d'environ 46 colonnes, la ligne compacte peut couper l'indication `stopping`.
 - Plan 5 : vérifier que `compat.json` et `assets/*.ogg` sont dans le paquet crates.io (`cargo package --list`).
 - Mineurs du plan 2 :
   - un lien symbolique cassé pour `config.toml` n'est détecté qu'à l'écriture ;
@@ -87,6 +99,12 @@ Ces fichiers sont gros : les lire par plages (`grep -n '^#' <fichier>`, puis Rea
   - `parse_compat` lit le schéma après la désérialisation complète (le message serait moins clair pour un futur schéma 2).
 
 ## Historique
+
+### 2026-10-31 : plan 3 exécuté
+
+9 tâches. Chaque tâche a eu sa relecture, avec de petits correctifs demandés au fil de l'eau : alignement de la colonne de détails, gardes du runtime, indication `stopping` placée en tête de ligne. Puis une revue finale de toute la branche (2 points importants : requête de position du curseur pendant la question de coût, effacement qui dépendait de cette requête), suivie d'une vague de 8 correctifs. La relecture de cette vague a fait retirer SIGHUP, pour que `nohup` reste efficace. Décisions d'Adrien sur les deux questions ouvertes : voir plus haut.
+
+Validation réelle dans un pseudo-terminal émulé (pyte), pour environ 0,021 $ : voir `docs/validation/2026-10-31-plan3.md`.
 
 ### 2026-10-31 : plan 2 mergé, CI compat en service
 

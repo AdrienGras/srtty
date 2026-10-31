@@ -17,6 +17,26 @@ pub enum Stage {
 }
 
 impl Stage {
+    /// Every stage, in pipeline order.
+    pub const ALL: [Stage; 5] = [
+        Stage::Extract,
+        Stage::Split,
+        Stage::Transcribe,
+        Stage::Assemble,
+        Stage::Write,
+    ];
+
+    /// Capitalized name shown in the dashboard.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Stage::Extract => "Extract",
+            Stage::Split => "Split",
+            Stage::Transcribe => "Transcribe",
+            Stage::Assemble => "Assemble",
+            Stage::Write => "Write",
+        }
+    }
+
     /// Lowercase name used as a line prefix.
     pub fn name(&self) -> &'static str {
         match self {
@@ -54,11 +74,18 @@ pub enum Event {
         cached: bool,
     },
     Warning(String),
+    /// The first Ctrl-C was received: the run is stopping.
+    Cancelling,
 }
 
 /// Receives run events.
 pub trait Reporter: Send + Sync {
     fn event(&self, e: &Event);
+    /// Hands the terminal back before an interactive prompt; the next event takes it again.
+    fn suspend(&self) {}
+    /// Erases any live display and restores the cursor. Called once a run ends,
+    /// whatever its outcome, before anything else is printed.
+    fn finish(&self) {}
 }
 
 /// Writes one plain line per event, without colors or cursor control.
@@ -139,6 +166,7 @@ fn plain_line(e: &Event, chunks: usize) -> String {
             )
         }
         Event::Warning(message) => format!("warning: {message}"),
+        Event::Cancelling => "interrupt: stopping; press Ctrl-C again to quit now".to_string(),
     }
 }
 
@@ -207,6 +235,7 @@ mod tests {
                 cached: true,
             },
             Event::Warning("no speech detected".into()),
+            Event::Cancelling,
         ];
         for e in &events {
             r.event(e);
@@ -221,8 +250,17 @@ mod tests {
              transcribe: chunk 2 retry 1 in 2.0 s (HTTP 503)\n\
              transcribe: chunk 3/8 done (142 words, 4.1 s, $0.0043)\n\
              transcribe: chunk 4/8 cached (12 words)\n\
-             warning: no speech detected\n"
+             warning: no speech detected\n\
+             interrupt: stopping; press Ctrl-C again to quit now\n"
         );
         assert!(!out.contains('\x1b'));
+    }
+
+    #[test]
+    fn stage_labels() {
+        assert_eq!(
+            Stage::ALL.map(|s| s.label()),
+            ["Extract", "Split", "Transcribe", "Assemble", "Write"]
+        );
     }
 }

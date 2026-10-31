@@ -29,18 +29,26 @@ pub struct OpenAiCompatible {
 }
 
 impl OpenAiCompatible {
-    pub fn new(base_url: String, api_key: ApiKey, model: String, mode: RequestMode) -> Self {
+    pub fn new(
+        base_url: String,
+        api_key: ApiKey,
+        model: String,
+        mode: RequestMode,
+    ) -> Result<Self, TranscribeError> {
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .expect("HTTP client configuration is static and valid");
-        Self {
+            .map_err(|e| TranscribeError::Fatal {
+                status: None,
+                message: format!("cannot build the HTTP client: {e}"),
+            })?;
+        Ok(Self {
             client,
             endpoint: format!("{}/audio/transcriptions", base_url.trim_end_matches('/')),
             api_key,
             model,
             mode,
-        }
+        })
     }
 
     /// Replaces every occurrence of the API key in provider-supplied text.
@@ -283,6 +291,17 @@ mod tests {
         url
     }
 
+    #[test]
+    fn new_builds_a_client() {
+        let built = OpenAiCompatible::new(
+            "http://127.0.0.1:1/v1".into(),
+            ApiKey("sk-test".into()),
+            "m".into(),
+            RequestMode::Multipart,
+        );
+        assert!(built.is_ok());
+    }
+
     fn dead_transcriber() -> OpenAiCompatible {
         OpenAiCompatible::new(
             dead_url(),
@@ -290,6 +309,7 @@ mod tests {
             "m".into(),
             RequestMode::Multipart,
         )
+        .unwrap()
     }
 
     fn transcriber(server: &MockServer, mode: RequestMode) -> OpenAiCompatible {
@@ -299,6 +319,7 @@ mod tests {
             "x-ai/grok-stt-1.0".into(),
             mode,
         )
+        .unwrap()
     }
 
     async fn setup(status: u16, body: serde_json::Value) -> (MockServer, OpenAiCompatible) {
@@ -433,7 +454,8 @@ mod tests {
             ApiKey("sk-test".into()),
             "m".into(),
             RequestMode::Multipart,
-        );
+        )
+        .unwrap();
         let (chunk, _dir) = fake_chunk();
         t.transcribe(&chunk, &TranscribeOptions::default())
             .await

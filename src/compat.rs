@@ -37,6 +37,15 @@ pub struct CompatEntry {
     pub diarization: Option<serde_json::Value>,
     pub usd_per_hour: Option<f64>,
     pub checked_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_probe: Option<FailedProbe>,
+}
+
+/// A compatible model's first failed conclusive probe; the next failure demotes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FailedProbe {
+    pub status: CompatStatus,
+    pub checked_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -579,6 +588,33 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&CompatSource::Remote).unwrap(),
             "\"remote\""
+        );
+    }
+
+    #[test]
+    fn failed_probe_is_optional_in_the_file() {
+        let text = r#"{"provider":"openrouter","id":"a/x","status":"compatible","words":true,
+            "fine_segments":false,"diarization":null,"usd_per_hour":0.1,"checked_at":"2030-05-06"}"#;
+        let e: CompatEntry = serde_json::from_str(text).unwrap();
+        assert_eq!(e.failed_probe, None);
+        let written = serde_json::to_value(&e).unwrap();
+        assert!(written.get("failed_probe").is_none(), "{written}");
+
+        let on_probation = CompatEntry {
+            failed_probe: Some(FailedProbe {
+                status: CompatStatus::Unusable,
+                checked_at: "2030-05-06".into(),
+            }),
+            ..e
+        };
+        let written = serde_json::to_string(&on_probation).unwrap();
+        assert!(
+            written.contains(r#""failed_probe":{"status":"unusable","checked_at":"2030-05-06"}"#),
+            "{written}"
+        );
+        assert_eq!(
+            serde_json::from_str::<CompatEntry>(&written).unwrap(),
+            on_probation
         );
     }
 

@@ -17,6 +17,26 @@ pub enum Stage {
 }
 
 impl Stage {
+    /// Every stage, in pipeline order.
+    pub const ALL: [Stage; 5] = [
+        Stage::Extract,
+        Stage::Split,
+        Stage::Transcribe,
+        Stage::Assemble,
+        Stage::Write,
+    ];
+
+    /// Capitalized name shown in the dashboard.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Stage::Extract => "Extract",
+            Stage::Split => "Split",
+            Stage::Transcribe => "Transcribe",
+            Stage::Assemble => "Assemble",
+            Stage::Write => "Write",
+        }
+    }
+
     /// Lowercase name used as a line prefix.
     pub fn name(&self) -> &'static str {
         match self {
@@ -224,5 +244,13 @@ mod tests {
              warning: no speech detected\n"
         );
         assert!(!out.contains('\x1b'));
+    }
+
+    #[test]
+    fn stage_labels() {
+        assert_eq!(
+            Stage::ALL.map(|s| s.label()),
+            ["Extract", "Split", "Transcribe", "Assemble", "Write"]
+        );
     }
 }

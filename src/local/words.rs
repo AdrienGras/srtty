@@ -8,6 +8,8 @@ pub struct TokenPiece {
     pub bytes: Vec<u8>,
     pub t0_cs: i64,
     pub t1_cs: i64,
+    /// DTW onset of the token, when DTW is on and found one.
+    pub t_dtw_cs: Option<i64>,
 }
 
 /// Builds words from the tokens of each segment.
@@ -15,6 +17,11 @@ pub struct TokenPiece {
 /// Works on bytes because an accented character can be split between two
 /// tokens. A token starting with a space opens a word, the others join the
 /// current word, and the first token of a segment always opens one.
+///
+/// A word starts at the DTW onset of its first token when there is one, else at
+/// its `t0`: whisper.cpp's own token times are contiguous and absorb pauses.
+/// Its end is the start plus whisper's duration estimate (first `t0` to last
+/// `t1`, never negative).
 ///
 /// Times are clamped: a word never ends before it starts, and never starts
 /// before the previous word.
@@ -29,6 +36,7 @@ pub fn words_from_tokens(segments: &[Vec<TokenPiece>]) -> Vec<Word> {
                 }
                 current = Some(OpenWord {
                     bytes: Vec::new(),
+                    start_cs: token.t_dtw_cs.unwrap_or(token.t0_cs),
                     t0_cs: token.t0_cs,
                     t1_cs: token.t1_cs,
                 });
@@ -48,6 +56,9 @@ pub fn words_from_tokens(segments: &[Vec<TokenPiece>]) -> Vec<Word> {
 /// A word being accumulated from tokens.
 struct OpenWord {
     bytes: Vec<u8>,
+    /// DTW onset of the first token, or its `t0`.
+    start_cs: i64,
+    /// `t0` of the first token.
     t0_cs: i64,
     t1_cs: i64,
 }
@@ -60,8 +71,9 @@ impl OpenWord {
             return;
         }
         let previous_start = words.last().map_or(f64::MIN, |w: &Word| w.start);
-        let start = (self.t0_cs as f64 / 100.0).max(previous_start);
-        let end = (self.t1_cs as f64 / 100.0).max(start);
+        let start = (self.start_cs as f64 / 100.0).max(previous_start);
+        let duration_cs = (self.t1_cs - self.t0_cs).max(0);
+        let end = ((self.start_cs + duration_cs) as f64 / 100.0).max(start);
         words.push(Word {
             start,
             end,
@@ -80,6 +92,14 @@ mod tests {
             bytes: text.as_ref().to_vec(),
             t0_cs: t0,
             t1_cs: t1,
+            t_dtw_cs: None,
+        }
+    }
+
+    fn tpd(text: &str, t0: i64, t1: i64, dtw: i64) -> TokenPiece {
+        TokenPiece {
+            t_dtw_cs: Some(dtw),
+            ..tp(text, t0, t1)
         }
     }
 
@@ -147,5 +167,30 @@ mod tests {
     fn invalid_utf8_is_replaced_not_panicking() {
         let words = words_from_tokens(&[vec![tp(" a", 0, 10), tp([0xFF], 10, 20)]]);
         assert_eq!(summary(&words), vec![("a\u{FFFD}", 0.0, 0.2)]);
+    }
+
+    #[test]
+    fn dtw_onset_moves_the_word_and_keeps_its_duration() {
+        let words = words_from_tokens(&[vec![tpd(" Ce", 5800, 5808, 5856)]]);
+        assert_eq!(summary(&words), vec![("Ce", 58.56, 58.64)]);
+
+        // A multi-token word starts at the DTW onset of its first token and
+        // lasts from the first t0 to the last t1.
+        let words =
+            words_from_tokens(&[vec![tpd(" Bar", 100, 120, 150), tpd("be", 120, 140, 170)]]);
+        assert_eq!(summary(&words), vec![("Barbe", 1.5, 1.9)]);
+    }
+
+    #[test]
+    fn missing_dtw_falls_back_to_t0() {
+        let words = words_from_tokens(&[vec![
+            tpd(" Ce", 0, 10, 20),
+            tp(" jour", 30, 50),
+            tpd(" la", 50, 60, 70),
+        ]]);
+        assert_eq!(
+            summary(&words),
+            vec![("Ce", 0.2, 0.3), ("jour", 0.3, 0.5), ("la", 0.7, 0.8)]
+        );
     }
 }

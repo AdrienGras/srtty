@@ -17,7 +17,8 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperError,
+    DtwMode, DtwModelPreset, DtwParameters, FullParams, SamplingStrategy, WhisperContext,
+    WhisperContextParameters, WhisperError,
 };
 
 use crate::error::SrttyError;
@@ -40,6 +41,8 @@ const LOGPROB_THRESHOLD: f32 = -1.0;
 /// Least probability of a detected language for it to be pinned: a chunk that
 /// opens with music gives a doubtful detection, which must not spread.
 const PIN_MIN_PROB: f32 = 0.8;
+/// Memory for the DTW computation (whisper-rs's default, 128 MiB).
+const DTW_MEM_SIZE: usize = 128 * 1024 * 1024;
 
 /// Checks that `path` exists and starts with the ggml magic bytes.
 pub fn check_ggml_magic(path: &Path) -> Result<(), SrttyError> {
@@ -112,9 +115,48 @@ pub fn keep_segment(no_speech_prob: f32, mean_plog: f32) -> bool {
     !(no_speech_prob > NO_SPEECH_THRESHOLD && mean_plog < LOGPROB_THRESHOLD)
 }
 
+/// The DTW alignment preset of a ggml model, from its file name
+/// (`ggml-<name>[-q<d>_<d>].bin`); `None` for a name that is not a known
+/// whisper model, which then keeps whisper.cpp's own token times.
+fn dtw_preset(path: &Path) -> Option<DtwModelPreset> {
+    let file = path.file_name()?.to_str()?;
+    let name = file.strip_prefix("ggml-").unwrap_or(file);
+    let name = name.strip_suffix(".bin").unwrap_or(name);
+    let name = strip_quantization(name);
+    Some(match name {
+        "tiny" => DtwModelPreset::Tiny,
+        "tiny.en" => DtwModelPreset::TinyEn,
+        "base" => DtwModelPreset::Base,
+        "base.en" => DtwModelPreset::BaseEn,
+        "small" => DtwModelPreset::Small,
+        "small.en" => DtwModelPreset::SmallEn,
+        "medium" => DtwModelPreset::Medium,
+        "medium.en" => DtwModelPreset::MediumEn,
+        "large-v1" => DtwModelPreset::LargeV1,
+        "large-v2" => DtwModelPreset::LargeV2,
+        "large-v3" => DtwModelPreset::LargeV3,
+        "large-v3-turbo" => DtwModelPreset::LargeV3Turbo,
+        _ => return None,
+    })
+}
+
+/// `name` without a trailing `-q<digit>_<digit>` quantization suffix.
+fn strip_quantization(name: &str) -> &str {
+    if let Some((head, tail)) = name.rsplit_once("-q")
+        && let [major, b'_', minor] = tail.as_bytes()
+        && major.is_ascii_digit()
+        && minor.is_ascii_digit()
+    {
+        return head;
+    }
+    name
+}
+
 /// The local whisper.cpp backend.
 pub struct LocalWhisper {
     ctx: Arc<WhisperContext>,
+    /// Whether the context was built with DTW token timestamps.
+    dtw: bool,
     name: String,
     threads: usize,
     /// Language confidently detected on the first chunk with words, given to
@@ -139,14 +181,27 @@ impl LocalWhisper {
             ))
         };
         let owned = path.to_path_buf();
+        let preset = dtw_preset(path);
+        let dtw = preset.is_some();
         let ctx = tokio::task::spawn_blocking(move || {
-            WhisperContext::new_with_params(&owned, WhisperContextParameters::default())
+            let mut params = WhisperContextParameters::default();
+            if let Some(model_preset) = preset {
+                // DTW places word onsets after pauses where whisper.cpp's own
+                // token times are contiguous. It needs flash attention off,
+                // which is the default.
+                params.dtw_parameters(DtwParameters {
+                    mode: DtwMode::ModelPreset { model_preset },
+                    dtw_mem_size: DTW_MEM_SIZE,
+                });
+            }
+            WhisperContext::new_with_params(&owned, params)
         })
         .await
         .map_err(|e| cannot_load(&e))?
         .map_err(|e| cannot_load(&e))?;
         Ok(LocalWhisper {
             ctx: Arc::new(ctx),
+            dtw,
             name: path.file_name().map_or_else(
                 || path.display().to_string(),
                 |n| n.to_string_lossy().into(),
@@ -202,6 +257,7 @@ impl Transcriber for LocalWhisper {
         let _abort_on_drop = AbortOnDrop(Arc::clone(&abort));
         let job = Job {
             ctx: Arc::clone(&self.ctx),
+            dtw: self.dtw,
             samples,
             language,
             prompt: opts.prompt.clone(),
@@ -257,6 +313,8 @@ impl Drop for Running {
 /// Everything the blocking thread needs for one chunk.
 struct Job {
     ctx: Arc<WhisperContext>,
+    /// Whether to read the DTW token timestamps.
+    dtw: bool,
     samples: Vec<f32>,
     /// The language to decode in, or `None` to detect it.
     language: Option<String>,
@@ -339,6 +397,7 @@ fn run_full(job: Job) -> Result<(Transcript, Option<&'static str>), WhisperError
                 bytes: token.to_bytes()?.to_vec(),
                 t0_cs: data.t0,
                 t1_cs: data.t1,
+                t_dtw_cs: (job.dtw && data.t_dtw >= 0).then_some(data.t_dtw),
             });
         }
         let segment_text = String::from_utf8_lossy(segment.to_bytes()?)
@@ -434,6 +493,36 @@ mod tests {
         let err = check_ggml_magic(&d.path().join("missing.bin")).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert!(err.to_string().contains("srtty setup"), "{err}");
+    }
+
+    #[test]
+    fn dtw_preset_from_file_name() {
+        let name = |file: &str| match dtw_preset(Path::new(file)) {
+            Some(preset) => format!("{preset:?}"),
+            None => "None".to_string(),
+        };
+        for (file, expected) in [
+            ("ggml-base.bin", "Base"),
+            ("/models/ggml-large-v3-turbo-q5_0.bin", "LargeV3Turbo"),
+            ("ggml-large-v3-turbo.bin", "LargeV3Turbo"),
+            ("ggml-small.en-q8_0.bin", "SmallEn"),
+            ("ggml-tiny.bin", "Tiny"),
+            ("ggml-tiny.en.bin", "TinyEn"),
+            ("ggml-base.en-q5_1.bin", "BaseEn"),
+            ("ggml-medium.bin", "Medium"),
+            ("ggml-medium.en.bin", "MediumEn"),
+            ("ggml-large-v1.bin", "LargeV1"),
+            ("ggml-large-v2-q5_0.bin", "LargeV2"),
+            ("ggml-large-v3.bin", "LargeV3"),
+            ("ggml-small.bin", "Small"),
+            ("my-model.bin", "None"),
+            ("ggml-model.bin", "None"),
+            ("ggml-large.bin", "None"),
+            ("ggml-base-q5.bin", "None"),
+            ("", "None"),
+        ] {
+            assert_eq!(name(file), expected, "{file}");
+        }
     }
 
     #[test]

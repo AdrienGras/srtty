@@ -5,11 +5,11 @@
 //! to its final path; on any failure, or when the future is dropped, the
 //! temporary file is removed.
 
-use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 use crate::cache::{hex, sha256_file};
 use crate::error::SrttyError;
@@ -42,13 +42,23 @@ pub async fn download(
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    std::fs::create_dir_all(dir)?;
+    tokio::fs::create_dir_all(dir).await?;
     // Created before the request so that dropping this future at any later
-    // point removes it.
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".srtty-")
-        .suffix(".part")
-        .tempfile_in(dir)?;
+    // point removes it. The blocking file calls run off the async threads.
+    let (tmp, file) = {
+        let dir = dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let tmp = tempfile::Builder::new()
+                .prefix(".srtty-")
+                .suffix(".part")
+                .tempfile_in(dir)?;
+            let file = tmp.as_file().try_clone()?;
+            Ok::<_, std::io::Error>((tmp, file))
+        })
+        .await
+        .map_err(std::io::Error::from)??
+    };
+    let mut file = tokio::fs::File::from_std(file);
 
     let mut response = client
         .get(url)
@@ -74,15 +84,21 @@ pub async fn download(
             return Err(mismatch());
         }
         hasher.update(&chunk);
-        tmp.as_file_mut().write_all(&chunk)?;
+        file.write_all(&chunk).await?;
         progress(received);
     }
 
     if received != bytes || hex(&hasher.finalize()) != sha256 {
         return Err(mismatch());
     }
-    tmp.as_file().sync_all()?;
-    tmp.persist(dest).map_err(|e| SrttyError::Io(e.error))?;
+    file.flush().await?;
+    file.sync_all().await?;
+    drop(file);
+    let dest = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || tmp.persist(dest))
+        .await
+        .map_err(std::io::Error::from)?
+        .map_err(|e| SrttyError::Io(e.error))?;
     Ok(())
 }
 

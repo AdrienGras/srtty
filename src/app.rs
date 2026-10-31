@@ -3,7 +3,7 @@
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use ratatui::crossterm::style::Stylize;
@@ -505,7 +505,11 @@ async fn run_job(
     };
     let mut summary = run(prep, req, transcriber, reporter, cancel).await?;
     summary.elapsed_s = started.elapsed().as_secs_f64();
-    warnings.append(&mut language_warnings.lock().unwrap_or_else(|p| p.into_inner()));
+    warnings.append(
+        &mut language_warnings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
     warnings.append(&mut summary.warnings);
     summary.warnings = warnings;
     Ok(Outcome::Done(summary))
@@ -538,7 +542,7 @@ fn language_warning(
         reporter.event(&Event::Warning(warning.clone()));
         warnings
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
             .push(warning);
     })
 }

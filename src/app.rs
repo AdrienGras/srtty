@@ -471,25 +471,22 @@ async fn run_job(
     Ok(Outcome::Done(summary))
 }
 
-/// SIGINT, SIGTERM and SIGHUP as one stream: `kill`, `timeout` or a closed
-/// terminal stop the run like Ctrl-C, so the dashboard is erased. SIGQUIT keeps
-/// its default behavior.
+/// SIGINT and SIGTERM as one stream: `kill` or `timeout` stop the run like
+/// Ctrl-C, so the dashboard is erased. SIGHUP is left alone, so that `nohup`
+/// keeps working (a handler would replace its ignore disposition), and SIGQUIT
+/// keeps its default behavior.
 fn stop_signals() -> std::io::Result<impl futures::Stream<Item = ()> + Unpin> {
     use tokio::signal::unix::{SignalKind, signal};
-    let streams = [
-        SignalKind::interrupt(),
-        SignalKind::terminate(),
-        SignalKind::hangup(),
-    ]
-    .into_iter()
-    .map(|kind| {
-        let sig = signal(kind)?;
-        Ok(Box::pin(futures::stream::unfold(
-            sig,
-            |mut sig| async move { sig.recv().await.map(|()| ((), sig)) },
-        )))
-    })
-    .collect::<std::io::Result<Vec<_>>>()?;
+    let streams = [SignalKind::interrupt(), SignalKind::terminate()]
+        .into_iter()
+        .map(|kind| {
+            let sig = signal(kind)?;
+            Ok(Box::pin(futures::stream::unfold(
+                sig,
+                |mut sig| async move { sig.recv().await.map(|()| ((), sig)) },
+            )))
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
     Ok(futures::stream::select_all(streams))
 }
 
@@ -611,19 +608,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminate_and_hangup_count_as_interrupts() {
+    async fn terminate_counts_as_an_interrupt() {
         use futures::StreamExt;
         let mut signals = stop_signals().unwrap();
-        let pid = std::process::id().to_string();
-        for signal in ["-TERM", "-HUP"] {
-            let sent = std::process::Command::new("kill")
-                .args([signal, &pid])
-                .status()
-                .unwrap();
-            assert!(sent.success());
-            let got = tokio::time::timeout(Duration::from_secs(5), signals.next()).await;
-            assert_eq!(got, Ok(Some(())), "{signal}");
-        }
+        // SIGTERM only: nothing handles SIGHUP, which would kill the test binary.
+        let sent = std::process::Command::new("kill")
+            .args(["-TERM", &std::process::id().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        let got = tokio::time::timeout(Duration::from_secs(5), signals.next()).await;
+        assert_eq!(got, Ok(Some(())));
     }
 
     #[test]

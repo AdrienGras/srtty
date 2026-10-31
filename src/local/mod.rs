@@ -5,6 +5,8 @@
 //! parallel. Dropping a `transcribe` future raises an abort flag that
 //! whisper.cpp polls during the encoder and decoder passes.
 
+pub mod catalog;
+pub mod download;
 pub mod words;
 
 use std::ffi::{c_int, c_void};

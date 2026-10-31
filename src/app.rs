@@ -15,7 +15,8 @@ use crate::cache::{CacheParams, ChunkCache};
 use crate::cli::{Cli, Command, CompatAction, ConfigAction};
 use crate::compat::{CompatEntry, CompatList, compat_url, estimate_cost_usd, provider_key};
 use crate::config::{
-    self, ApiKey, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig,
+    self, Backend, Config, GPU_BUILD, KeyState, ProviderKind, RequestMode, Resolved,
+    SubtitleConfig, available_cores, parallelism,
 };
 use crate::dashboard::recap::recap_lines;
 use crate::dashboard::{Dashboard, DisplayMode, TICK, display_mode, stderr_screen};
@@ -156,7 +157,7 @@ fn cue_rules(subtitles: &SubtitleConfig, speakers: bool) -> CueRules {
 }
 
 fn check_settings(r: &Resolved) -> Result<(), SrttyError> {
-    if r.jobs == 0 {
+    if r.jobs == Some(0) {
         return Err(SrttyError::Config(
             "jobs must be at least 1 (`chunking.jobs` or --jobs)".into(),
         ));
@@ -183,6 +184,8 @@ struct ConfigView<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     api_key: Option<String>,
     model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_path: Option<&'a Path>,
     request_mode: RequestMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<&'a str>,
@@ -195,10 +198,13 @@ struct ConfigView<'a> {
 struct ChunkingView {
     target_s: f64,
     jobs: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    threads_per_job: Option<usize>,
 }
 
 fn show_config(cli: &Cli) -> Result<(), SrttyError> {
     let r = load_settings(cli)?;
+    let par = parallelism(r.provider.kind, r.jobs, available_cores(), GPU_BUILD);
     let view = ConfigView {
         config_file: paths::config_file(),
         provider: &r.provider_name,
@@ -211,13 +217,15 @@ fn show_config(cli: &Cli) -> Result<(), SrttyError> {
             KeyState::NotNeeded => None,
         },
         model: &r.model,
+        model_path: r.model_path.as_deref(),
         request_mode: r.provider.request_mode,
         language: r.language.as_deref(),
         confirm_above_usd: r.confirm_above_usd,
         subtitles: &r.subtitles,
         chunking: ChunkingView {
             target_s: r.target_s,
-            jobs: r.jobs,
+            jobs: par.jobs,
+            threads_per_job: par.threads_per_job,
         },
     };
     let text = if cli.json {
@@ -236,12 +244,15 @@ pub(crate) fn print_stdout(text: &str) -> Result<(), SrttyError> {
     Ok(())
 }
 
+fn local_unavailable() -> SrttyError {
+    SrttyError::Config("local backend is not available in this build".into())
+}
+
 /// What a run needs once its settings are checked.
 struct Job {
     input: PathBuf,
     r: Resolved,
-    api_key: ApiKey,
-    base_url: String,
+    backend: Backend,
 }
 
 /// How a run ended, before anything is printed.
@@ -262,18 +273,10 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         SrttyError::Usage("no input file given; run `srtty --help` for usage".into())
     })?;
     let r = load_settings(&cli)?;
-    let api_key = r.require_key()?;
-    if r.provider.kind == ProviderKind::Local {
-        return Err(SrttyError::Config(
-            "local backend is not available in this build".into(),
-        ));
+    let backend = r.backend()?;
+    if matches!(backend, Backend::Local { .. }) {
+        return Err(local_unavailable());
     }
-    let base_url = r.provider.base_url.clone().ok_or_else(|| {
-        SrttyError::Config(format!(
-            "provider `{}` has no `base_url` in the config file",
-            r.provider_name
-        ))
-    })?;
 
     // Before the dashboard opens: an error here must not leave it on screen.
     let signals = stop_signals()?;
@@ -328,12 +331,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
             }
         },
     ));
-    let job = Job {
-        input,
-        r,
-        api_key,
-        base_url,
-    };
+    let job = Job { input, r, backend };
     let outcome = run_job(&cli, job, Arc::clone(&reporter), cancel, started).await;
     reporter.finish();
 
@@ -370,21 +368,21 @@ async fn run_job(
     cancel: CancellationToken,
     started: Instant,
 ) -> Result<Outcome, SrttyError> {
-    let Job {
-        input,
-        r,
-        api_key,
+    let Job { input, r, backend } = job;
+    let Backend::Api {
         base_url,
-    } = job;
+        key,
+        mode,
+    } = backend
+    else {
+        return Err(local_unavailable());
+    };
     let cache_dir = paths::cache_dir();
     let compat = CompatList::load(&cache_dir);
     let entry = provider_key(&base_url).and_then(|provider| compat.find(provider, &r.model));
 
     let mut warnings = Vec::new();
-    if r.prompt.is_some()
-        && r.provider.request_mode == RequestMode::Multipart
-        && is_openrouter(&base_url)
-    {
+    if r.prompt.is_some() && mode == RequestMode::Multipart && is_openrouter(&base_url) {
         let warning = "OpenRouter ignores --prompt in multipart mode".to_string();
         reporter.event(&Event::Warning(warning.clone()));
         warnings.push(warning);
@@ -444,7 +442,7 @@ async fn run_job(
         output: cli.output.clone(),
         chunks_override,
         target_s: r.target_s,
-        jobs: r.jobs,
+        jobs: parallelism(r.provider.kind, r.jobs, available_cores(), GPU_BUILD).jobs,
         opts,
         rules: cue_rules(&r.subtitles, cli.speakers),
         speaker_label: r.subtitles.speaker_label.clone(),
@@ -458,12 +456,7 @@ async fn run_job(
         },
         provider: r.provider_name.clone(),
     };
-    let transcriber = Arc::new(OpenAiCompatible::new(
-        base_url,
-        api_key,
-        r.model,
-        r.provider.request_mode,
-    )?);
+    let transcriber = Arc::new(OpenAiCompatible::new(base_url, key, r.model, mode)?);
     let mut summary = run(prep, req, transcriber, reporter, cancel).await?;
     summary.elapsed_s = started.elapsed().as_secs_f64();
     warnings.append(&mut summary.warnings);

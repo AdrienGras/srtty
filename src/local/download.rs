@@ -92,6 +92,28 @@ fn mismatch() -> SrttyError {
     )
 }
 
+/// Removes the temporary files that an interrupted download left in `dir`
+/// (`.srtty-*.part`): a signal, a crash or a power loss skips their cleanup.
+/// Returns how many were removed; a missing `dir` is not an error.
+pub fn remove_stale_parts(dir: &Path) -> std::io::Result<usize> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".srtty-") && name.ends_with(".part") && entry.file_type()?.is_file() {
+            std::fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Whether `path` holds the expected file: the size is compared first and the
 /// file is only hashed when it matches. A missing file is not complete.
 pub fn is_complete(path: &Path, bytes: u64, sha256: &str) -> std::io::Result<bool> {
@@ -220,7 +242,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(entries(dir.path()).is_empty());
-        assert!(last <= 65_536);
+        assert!(last <= 1000, "{last}");
     }
 
     #[tokio::test]
@@ -269,6 +291,28 @@ mod tests {
         let timed_out = tokio::time::timeout(Duration::from_millis(200), fut).await;
         assert!(timed_out.is_err(), "the download should still be pending");
         assert!(entries(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn stale_parts_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            ".srtty-a1b2.part",
+            ".srtty-c3d4.part",
+            "ggml-base.bin",
+            ".hidden",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        // A directory with a matching name is not a temporary file.
+        std::fs::create_dir(dir.path().join(".srtty-dir.part")).unwrap();
+
+        assert_eq!(remove_stale_parts(dir.path()).unwrap(), 2);
+
+        let mut left = entries(dir.path());
+        left.sort();
+        assert_eq!(left, [".hidden", ".srtty-dir.part", "ggml-base.bin"]);
+        assert_eq!(remove_stale_parts(&dir.path().join("absent")).unwrap(), 0);
     }
 
     #[test]

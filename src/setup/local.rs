@@ -12,7 +12,7 @@ use super::prompt::Prompter;
 use crate::config::available_cores;
 use crate::error::SrttyError;
 use crate::local::catalog::{CatalogModel, human_size, model_url};
-use crate::local::download::{download, http_client, is_complete};
+use crate::local::download::{download, http_client, is_complete, remove_stale_parts};
 use crate::local::{LocalWhisper, check_ggml_magic};
 use crate::paths::expand_tilde;
 use crate::probe::{SAMPLE, SAMPLE_S, write_sample};
@@ -178,6 +178,10 @@ pub struct LiveFetcher;
 #[async_trait]
 impl ModelFetcher for LiveFetcher {
     async fn fetch(&self, model: &CatalogModel, dest: &Path) -> Result<(), SrttyError> {
+        // `setup` runs one download at a time: any `.part` there is a leftover.
+        if let Some(dir) = dest.parent() {
+            remove_stale_parts(dir)?;
+        }
         let client = http_client()?;
         let url = model_url(model.file);
         let total = human_size(model.bytes);

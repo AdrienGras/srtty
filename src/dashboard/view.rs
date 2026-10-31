@@ -232,9 +232,10 @@ fn render_chunks(
         .clone()
         .map(|i| chunk_cells(i, &state.chunks[i], digits, now, spinner))
         .collect();
-    // Details start in the same column, after the longest status label.
+    // Details start in the same column, after the longest label that has one.
     let label_width = cells
         .iter()
+        .filter(|c| c.detail.is_some())
         .map(|c| c.label.chars().count())
         .max()
         .unwrap_or(0);
@@ -610,6 +611,15 @@ mod tests {
             column(&lines, "#8 ", "2.5 s"),
             column(&lines, "#4 ", "HTTP 429")
         );
+    }
+
+    #[test]
+    fn retry_detail_fits_at_60_columns() {
+        // Running and pending labels do not widen the label column.
+        let lines = draw(&mockup_state(), 60, 17, s(70));
+        let retry = lines.iter().find(|l| l.contains("#4 ")).unwrap();
+        let text = retry.trim_end_matches('│').trim_end();
+        assert!(text.ends_with("retrying in 1 s"), "{text}");
     }
 
     #[test]

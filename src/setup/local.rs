@@ -48,6 +48,8 @@ pub struct LocalSetup<'a> {
     pub catalog: &'a [CatalogModel],
     pub fetcher: &'a dyn ModelFetcher,
     pub tester: &'a dyn LocalTester,
+    /// What a leading `~` in a typed path stands for (`None`: kept as typed).
+    pub home: Option<PathBuf>,
 }
 
 /// Asks for a model until one is kept and returns its path: a catalog model
@@ -98,9 +100,12 @@ pub async fn choose_local_model(
                 dest
             }
             None => {
-                let input = p.text("Path to a ggml model file:", None, &validate_model_file)?;
+                let home = local.home.as_deref();
+                let input = p.text("Path to a ggml model file:", None, &|input| {
+                    validate_model_file(input, home)
+                })?;
                 // The config must not depend on the directory `setup` ran in.
-                let path = expand(&input);
+                let path = expand(&input, home);
                 std::path::absolute(&path).unwrap_or(path)
             }
         };
@@ -148,17 +153,14 @@ fn model_label(model: &CatalogModel, dest: &Path) -> String {
 }
 
 /// The typed path, trimmed and with a leading `~` expanded.
-fn expand(input: &str) -> PathBuf {
-    expand_tilde(
-        Path::new(input.trim()),
-        etcetera::home_dir().ok().as_deref(),
-    )
+fn expand(input: &str, home: Option<&Path>) -> PathBuf {
+    expand_tilde(Path::new(input.trim()), home)
 }
 
 /// Accepts an existing file that starts with the ggml magic bytes. The
 /// messages never quote the input.
-fn validate_model_file(input: &str) -> Result<(), String> {
-    let path = expand(input);
+fn validate_model_file(input: &str, home: Option<&Path>) -> Result<(), String> {
+    let path = expand(input, home);
     if !path.is_file() {
         return Err("No file at that path.".into());
     }

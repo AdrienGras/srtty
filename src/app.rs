@@ -85,6 +85,7 @@ async fn setup(cli: &Cli) -> Result<(), SrttyError> {
             catalog: crate::local::catalog::CATALOG,
             fetcher: &crate::setup::local::LiveFetcher,
             tester: &crate::setup::local::LiveLocalTester,
+            home: etcetera::home_dir().ok(),
         },
     };
     run_setup(&mut InquirePrompter, &ctx).await?;

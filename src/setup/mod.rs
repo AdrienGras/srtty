@@ -714,6 +714,7 @@ mod tests {
                 catalog: &[],
                 fetcher: &UnusedLocal,
                 tester: &UnusedLocal,
+                home: None,
             },
         }
     }
@@ -1442,6 +1443,11 @@ mod tests {
                 self.dir.path().join("models")
             }
 
+            /// The home directory `~` stands for in this setup.
+            fn home(&self) -> PathBuf {
+                self.dir.path().join("home")
+            }
+
             fn model_path(&self) -> PathBuf {
                 self.models_dir().join("ggml-tiny-test.bin")
             }
@@ -1459,6 +1465,7 @@ mod tests {
                         catalog: &self.catalog,
                         fetcher: &self.fetcher,
                         tester: &self.tester,
+                        home: Some(self.home()),
                     },
                 }
             }
@@ -1625,15 +1632,11 @@ mod tests {
             let l = Local::new(Fetch::Write, true);
             let mp3 = l.dir.path().join("song.mp3");
             std::fs::write(&mp3, b"ID3\x04\x00 not a model").unwrap();
-            // A model under the home directory, given as `~/…`.
-            let home = etcetera::home_dir().unwrap();
-            let in_home = tempfile::Builder::new()
-                .prefix(".srtty-test-")
-                .suffix(".bin")
-                .tempfile_in(&home)
-                .unwrap();
-            std::fs::write(in_home.path(), MODEL_BYTES).unwrap();
-            let name = in_home.path().file_name().unwrap().to_str().unwrap();
+            // A model under the (temporary) home directory, given as `~/…`.
+            let home = l.home();
+            std::fs::create_dir_all(&home).unwrap();
+            let name = "my-model.bin";
+            std::fs::write(home.join(name), MODEL_BYTES).unwrap();
             let mut p = ScriptedPrompter::new(vec![
                 Answer::Select(LOCAL),
                 Answer::Select(OWN_FILE),

@@ -233,7 +233,15 @@ impl Resolved {
     }
 }
 
+/// Why a run on a local provider stops in a build without the `local` feature.
+pub const LOCAL_UNAVAILABLE: &str = "the local backend is not available in this build; reinstall with: cargo install srtty --features local";
+
+/// A local provider without `model_path`. Without the `local` feature, `srtty
+/// setup` cannot offer a model, so the build itself is the problem.
 fn missing_model_path(provider_name: &str) -> SrttyError {
+    if !cfg!(feature = "local") {
+        return SrttyError::Config(LOCAL_UNAVAILABLE.into());
+    }
     SrttyError::Config(format!(
         "provider `{provider_name}` has no `model_path`; run `srtty setup` or pass --model <path to a ggml model>"
     ))
@@ -702,6 +710,20 @@ model = "whisper-large-v3"
         assert_eq!(r.model, "ggml-tiny.bin");
     }
 
+    /// Without the feature, `srtty setup` cannot help: say what can.
+    #[cfg(not(feature = "local"))]
+    #[test]
+    fn local_provider_without_model_path_needs_the_feature() {
+        let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();
+        let err = resolve(local_cfg(None), &cli, &env_with(&[])).unwrap_err();
+        assert!(matches!(err, SrttyError::Config(_)));
+        assert_eq!(
+            err.to_string(),
+            "the local backend is not available in this build; reinstall with: cargo install srtty --features local"
+        );
+    }
+
+    #[cfg(feature = "local")]
     #[test]
     fn local_provider_without_model_path_is_a_config_error() {
         let cli = Cli::try_parse_from(["srtty", "a.mp4"]).unwrap();

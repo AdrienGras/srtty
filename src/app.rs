@@ -15,8 +15,8 @@ use crate::cache::{CacheParams, ChunkCache};
 use crate::cli::{Cli, Command, CompatAction, ConfigAction};
 use crate::compat::{CompatEntry, CompatList, compat_url, estimate_cost_usd, provider_key};
 use crate::config::{
-    self, Backend, Config, GPU_BUILD, KeyState, ProviderKind, RequestMode, Resolved,
-    SubtitleConfig, available_cores, parallelism,
+    self, Backend, Config, GPU_BUILD, KeyState, LOCAL_UNAVAILABLE, ProviderKind, RequestMode,
+    Resolved, SubtitleConfig, available_cores, parallelism,
 };
 use crate::dashboard::recap::recap_lines;
 use crate::dashboard::{Dashboard, DisplayMode, TICK, display_mode, stderr_screen};
@@ -252,7 +252,6 @@ pub(crate) fn print_stdout(text: &str) -> Result<(), SrttyError> {
     Ok(())
 }
 
-pub(crate) const LOCAL_UNAVAILABLE: &str = "the local backend is not available in this build; reinstall with: cargo install srtty --features local";
 pub(crate) const LOCAL_NO_SPEAKERS: &str = "--speakers is not supported by the local backend; use an API provider with a diarization model (see `srtty models`)";
 
 #[cfg(not(feature = "local"))]

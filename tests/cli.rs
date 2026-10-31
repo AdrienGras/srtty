@@ -144,6 +144,7 @@ async fn e2e_plain_progress_has_no_ansi() {
         .await;
     let sb = Sandbox::new(&format!("{}/v1", server.uri()), "deepgram/nova-3", 300.0);
 
+    // Off a TTY the mode is Plain whatever NO_COLOR says; `display_mode_rules` covers NO_COLOR.
     let mut cmd = sb.cmd_with_key();
     cmd.arg(&sb.input)
         .args(["--format", "srt"])

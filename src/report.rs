@@ -74,6 +74,8 @@ pub enum Event {
         cached: bool,
     },
     Warning(String),
+    /// The first Ctrl-C was received: the run is stopping.
+    Cancelling,
 }
 
 /// Receives run events.
@@ -164,6 +166,7 @@ fn plain_line(e: &Event, chunks: usize) -> String {
             )
         }
         Event::Warning(message) => format!("warning: {message}"),
+        Event::Cancelling => "interrupt: stopping; press Ctrl-C again to quit now".to_string(),
     }
 }
 
@@ -232,6 +235,7 @@ mod tests {
                 cached: true,
             },
             Event::Warning("no speech detected".into()),
+            Event::Cancelling,
         ];
         for e in &events {
             r.event(e);
@@ -246,7 +250,8 @@ mod tests {
              transcribe: chunk 2 retry 1 in 2.0 s (HTTP 503)\n\
              transcribe: chunk 3/8 done (142 words, 4.1 s, $0.0043)\n\
              transcribe: chunk 4/8 cached (12 words)\n\
-             warning: no speech detected\n"
+             warning: no speech detected\n\
+             interrupt: stopping; press Ctrl-C again to quit now\n"
         );
         assert!(!out.contains('\x1b'));
     }

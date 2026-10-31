@@ -52,6 +52,8 @@ pub struct DashboardState {
     /// Audio seconds of the chunks transcribed in this run (cached ones excluded).
     transcribed_audio_s: f64,
     warnings: Vec<String>,
+    /// Set by `Event::Cancelling`: the run is stopping after a first Ctrl-C.
+    pub cancelling: bool,
 }
 
 impl DashboardState {
@@ -65,6 +67,7 @@ impl DashboardState {
             transcribe_started: None,
             transcribed_audio_s: 0.0,
             warnings: Vec::new(),
+            cancelling: false,
         }
     }
 
@@ -133,6 +136,7 @@ impl DashboardState {
                 }
             }
             Event::Warning(message) => self.warnings.push(message.clone()),
+            Event::Cancelling => self.cancelling = true,
         }
     }
 

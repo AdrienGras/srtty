@@ -468,6 +468,8 @@ mod tests {
 
     #[test]
     fn only_a_confident_detection_is_pinned() {
+        // whisper.cpp logs an unknown id to stderr unless the hooks are installed.
+        quiet_whisper();
         let fr = whisper_rs::get_lang_id("fr").unwrap();
         let mut probs = vec![0.0f32; whisper_rs::get_lang_max_id() as usize + 1];
         probs[fr as usize] = 0.95;

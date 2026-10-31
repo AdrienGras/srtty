@@ -6,8 +6,8 @@ license = "MIT OR Apache-2.0"
 description = "Turn video and audio into subtitles with OpenAI-compatible transcription APIs"
 
 [features]
-# Local whisper backend, added in plan 4.
-local = []
+# Local whisper.cpp backend (needs CMake, a C/C++ compiler and libclang to build).
+local = ["dep:whisper-rs"]
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
@@ -28,6 +28,11 @@ tempfile = "3"
 toml_edit = "0.25.17"
 inquire = "0.9.4"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29"] }
+whisper-rs = { version = "0.16.0", optional = true }
+
+# Metal acceleration on macOS builds with the `local` feature.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16.0", optional = true, features = ["metal"] }
 
 [dev-dependencies]
 assert_cmd = "2"

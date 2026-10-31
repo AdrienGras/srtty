@@ -79,6 +79,13 @@ async fn setup(cli: &Cli) -> Result<(), SrttyError> {
         compat_url: compat_url(),
         env: &env,
         tester: &LiveTester,
+        #[cfg(feature = "local")]
+        local: crate::setup::local::LocalSetup {
+            models_dir: paths::models_dir(),
+            catalog: crate::local::catalog::CATALOG,
+            fetcher: &crate::setup::local::LiveFetcher,
+            tester: &crate::setup::local::LiveLocalTester,
+        },
     };
     run_setup(&mut InquirePrompter, &ctx).await?;
     Ok(())

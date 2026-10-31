@@ -1,6 +1,8 @@
 //! `srtty setup`: choose a provider, the variable holding its key and a model,
 //! optionally test the model on a short sample, then write the config file.
 
+#[cfg(feature = "local")]
+pub mod local;
 pub mod prompt;
 pub mod write;
 
@@ -63,6 +65,9 @@ pub struct SetupContext<'a> {
     pub compat_url: String,
     pub env: &'a dyn Fn(&str) -> Option<String>,
     pub tester: &'a dyn SampleTester,
+    /// The local whisper.cpp path.
+    #[cfg(feature = "local")]
+    pub local: local::LocalSetup<'a>,
 }
 
 /// Outcome of `setup`: whether the config file was written, and its path.
@@ -73,20 +78,54 @@ pub struct SetupDone {
 }
 
 const CUSTOM: &str = "Custom OpenAI-compatible URL";
+#[cfg(feature = "local")]
+const LOCAL_WHISPER: &str = "Local Whisper (offline, runs on this machine)";
+#[cfg(not(feature = "local"))]
 const LOCAL_WHISPER: &str = "Local Whisper (not available in this build)";
+/// Name of the provider entry the local path writes.
+#[cfg(feature = "local")]
+const LOCAL_PROVIDER: &str = "local";
 const SHOW_INCOMPATIBLE: &str = "Show incompatible models";
 const ENTER_MODEL_ID: &str = "Enter a model id";
 
-/// Asks for a provider, its key variable and a model, offers a paid test of
-/// the model, then writes the config file. Prompts block: nothing else runs
-/// while `setup` waits for an answer.
+/// Asks for a provider, then either its key variable and a model with an
+/// optional paid test, or (with the `local` feature) a whisper model with an
+/// optional free test, then writes the config file. Prompts block: nothing
+/// else runs while `setup` waits for an answer.
 pub async fn run_setup(
     p: &mut dyn Prompter,
     ctx: &SetupContext<'_>,
 ) -> Result<SetupDone, SrttyError> {
     // A file `setup` cannot update is reported before any question.
     let existing = read_existing(&ctx.config_path)?;
-    let (name, base_url, default_var) = choose_provider(p)?;
+    let (name, text) = match choose_provider(p)? {
+        ProviderPick::Api {
+            name,
+            base_url,
+            default_var,
+        } => {
+            let choice = api_provider(p, ctx, name, base_url, default_var).await?;
+            let text = apply(existing.as_deref(), &choice)?;
+            (choice.name, text)
+        }
+        #[cfg(feature = "local")]
+        ProviderPick::Local => {
+            let model_path = local::choose_local_model(p, &ctx.local).await?;
+            let text = write::apply_local(existing.as_deref(), LOCAL_PROVIDER, &model_path)?;
+            (LOCAL_PROVIDER.to_string(), text)
+        }
+    };
+    finish(p, &ctx.config_path, existing.is_some(), &name, &text)
+}
+
+/// The API path: the key variable, then a model, with the optional paid test.
+async fn api_provider(
+    p: &mut dyn Prompter,
+    ctx: &SetupContext<'_>,
+    name: String,
+    base_url: String,
+    default_var: Option<&'static str>,
+) -> Result<ProviderChoice, SrttyError> {
     let var = p.text(
         "Environment variable holding the API key:",
         default_var,
@@ -123,53 +162,68 @@ pub async fn run_setup(
     });
 
     let model = choose_model(p, ctx, &rows, &base_url, &var, key.as_ref()).await?;
-    finish(
-        p,
-        ctx,
-        existing.as_deref(),
-        &ProviderChoice {
-            name,
-            base_url,
-            api_key_env: var,
-            model,
-        },
-    )
+    Ok(ProviderChoice {
+        name,
+        base_url,
+        api_key_env: var,
+        model,
+    })
 }
 
-/// Provider name, base URL and the suggested key variable.
-fn choose_provider(
-    p: &mut dyn Prompter,
-) -> Result<(String, String, Option<&'static str>), SrttyError> {
+/// The provider picked in the first menu.
+enum ProviderPick {
+    /// Provider name, base URL and the suggested key variable.
+    Api {
+        name: String,
+        base_url: String,
+        default_var: Option<&'static str>,
+    },
+    /// Local whisper.cpp; never picked without the `local` feature.
+    #[cfg(feature = "local")]
+    Local,
+}
+
+fn choose_provider(p: &mut dyn Prompter) -> Result<ProviderPick, SrttyError> {
     let mut options: Vec<String> = PRESETS.iter().map(|pr| pr.label.to_string()).collect();
     options.push(CUSTOM.to_string());
     options.push(LOCAL_WHISPER.to_string());
-    loop {
+    let i = loop {
         let i = p.select("Which transcription provider?", &options)?;
-        if let Some(pr) = PRESETS.get(i) {
-            return Ok((
-                pr.key.to_string(),
-                pr.base_url.to_string(),
-                Some(pr.api_key_env),
-            ));
-        }
-        if options[i] == LOCAL_WHISPER {
+        // Without the feature, the local option only explains itself.
+        if !cfg!(feature = "local") && options[i] == LOCAL_WHISPER {
             p.say(
                 "Local Whisper needs a build with the `local` feature: cargo install srtty --features local",
             );
             continue;
         }
-        let name = p.text(
-            "Provider name (used in the config file):",
-            Some("custom"),
-            &validate_provider_name,
-        )?;
-        let base_url = p.text(
-            "Base URL (e.g. http://localhost:8000/v1):",
-            None,
-            &validate_base_url,
-        )?;
-        return Ok((name, base_url.trim().to_string(), None));
+        break i;
+    };
+    if let Some(pr) = PRESETS.get(i) {
+        return Ok(ProviderPick::Api {
+            name: pr.key.to_string(),
+            base_url: pr.base_url.to_string(),
+            default_var: Some(pr.api_key_env),
+        });
     }
+    #[cfg(feature = "local")]
+    if options[i] == LOCAL_WHISPER {
+        return Ok(ProviderPick::Local);
+    }
+    let name = p.text(
+        "Provider name (used in the config file):",
+        Some("custom"),
+        &validate_provider_name,
+    )?;
+    let base_url = p.text(
+        "Base URL (e.g. http://localhost:8000/v1):",
+        None,
+        &validate_base_url,
+    )?;
+    Ok(ProviderPick::Api {
+        name,
+        base_url: base_url.trim().to_string(),
+        default_var: None,
+    })
 }
 
 /// The validators never quote the input: it may be a pasted key.
@@ -331,22 +385,20 @@ fn read_existing(path: &Path) -> Result<Option<String>, SrttyError> {
     Ok(Some(text))
 }
 
-/// Writes the config file, asking first when one exists.
+/// Writes `text`, the updated config, to `path`, asking first when a file
+/// exists (`update`). `name` is the provider `text` makes the default.
 fn finish(
     p: &mut dyn Prompter,
-    ctx: &SetupContext<'_>,
-    existing: Option<&str>,
-    choice: &ProviderChoice,
+    path: &Path,
+    update: bool,
+    name: &str,
+    text: &str,
 ) -> Result<SetupDone, SrttyError> {
-    let path = &ctx.config_path;
-    let text = apply(existing, choice)?;
-    if existing.is_some()
+    if update
         && !p.confirm(
             &format!(
-                "Update {}? This sets default_provider = \"{}\" and updates [providers.{}].",
+                "Update {}? This sets default_provider = \"{name}\" and updates [providers.{name}].",
                 path.display(),
-                choice.name,
-                choice.name
             ),
             false,
         )?
@@ -354,15 +406,15 @@ fn finish(
         p.say("Nothing written.");
         return Ok(SetupDone {
             written: false,
-            path: path.clone(),
+            path: path.to_path_buf(),
         });
     }
-    write_config(path, &text)?;
+    write_config(path, text)?;
     p.say(&format!("Wrote {}.", path.display()));
     p.say("Next: srtty <video-or-audio-file>");
     Ok(SetupDone {
         written: true,
-        path: path.clone(),
+        path: path.to_path_buf(),
     })
 }
 
@@ -656,6 +708,40 @@ mod tests {
             compat_url: format!("{}/compat.json", server.uri()),
             env,
             tester,
+            #[cfg(feature = "local")]
+            local: local::LocalSetup {
+                models_dir: dir.path().join("models"),
+                catalog: &[],
+                fetcher: &UnusedLocal,
+                tester: &UnusedLocal,
+            },
+        }
+    }
+
+    /// Stands in for the local backend in the API flows, which never reach it.
+    #[cfg(feature = "local")]
+    struct UnusedLocal;
+
+    #[cfg(feature = "local")]
+    #[async_trait]
+    impl local::ModelFetcher for UnusedLocal {
+        async fn fetch(
+            &self,
+            _model: &crate::local::catalog::CatalogModel,
+            _dest: &std::path::Path,
+        ) -> Result<(), SrttyError> {
+            panic!("unexpected download")
+        }
+    }
+
+    #[cfg(feature = "local")]
+    #[async_trait]
+    impl local::LocalTester for UnusedLocal {
+        async fn test(
+            &self,
+            _model_path: &std::path::Path,
+        ) -> Result<local::LocalTestOutcome, SrttyError> {
+            panic!("unexpected local test")
         }
     }
 
@@ -777,7 +863,11 @@ mod tests {
                 "OpenAI",
                 "Groq",
                 "Custom OpenAI-compatible URL",
-                "Local Whisper (not available in this build)"
+                if cfg!(feature = "local") {
+                    "Local Whisper (offline, runs on this machine)"
+                } else {
+                    "Local Whisper (not available in this build)"
+                }
             ]
         );
         assert_eq!(
@@ -1042,6 +1132,7 @@ mod tests {
         assert_eq!(written_model(&ctx.config_path).1, "whisper-large-v3");
     }
 
+    #[cfg(not(feature = "local"))]
     #[tokio::test]
     async fn local_whisper_is_explained_then_asked_again() {
         let server = server(200).await;
@@ -1220,5 +1311,397 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+    #[cfg(feature = "local")]
+    mod local_flow {
+        use std::path::Path;
+
+        use sha2::{Digest, Sha256};
+
+        use super::*;
+        use crate::config::ProviderKind;
+        use crate::local::catalog::CatalogModel;
+        use crate::setup::local::{LocalSetup, LocalTestOutcome, LocalTester, ModelFetcher};
+
+        const MODEL_BYTES: &[u8] = b"lmgg-test-model";
+        const PROVIDER_MENU: &str = "Which transcription provider?";
+        const MODEL_MENU: &str = "Whisper model:";
+        const TEST_QUESTION: &str =
+            "Test the model on a 30 s sample? It runs locally and costs nothing.";
+        const LOCAL: usize = 4;
+        const TINY: usize = 0;
+        const OWN_FILE: usize = 1;
+
+        /// A one-entry catalog whose model is `MODEL_BYTES`.
+        fn test_catalog() -> Vec<CatalogModel> {
+            let sha256 = crate::cache::hex(&Sha256::digest(MODEL_BYTES));
+            vec![CatalogModel {
+                name: "tiny-test",
+                file: "ggml-tiny-test.bin",
+                bytes: MODEL_BYTES.len() as u64,
+                sha256: Box::leak(sha256.into_boxed_str()),
+                note: "test model",
+            }]
+        }
+
+        enum Fetch {
+            Write,
+            Fail,
+            Interrupt,
+        }
+
+        /// Writes the expected model (or fails) and counts its calls.
+        struct FakeFetcher {
+            calls: AtomicUsize,
+            outcome: Fetch,
+        }
+
+        impl FakeFetcher {
+            fn new(outcome: Fetch) -> Self {
+                Self {
+                    calls: AtomicUsize::new(0),
+                    outcome,
+                }
+            }
+
+            fn calls(&self) -> usize {
+                self.calls.load(Ordering::SeqCst)
+            }
+        }
+
+        #[async_trait]
+        impl ModelFetcher for FakeFetcher {
+            async fn fetch(&self, model: &CatalogModel, dest: &Path) -> Result<(), SrttyError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(dest.file_name().unwrap(), model.file);
+                match self.outcome {
+                    Fetch::Write => {
+                        std::fs::create_dir_all(dest.parent().unwrap())?;
+                        std::fs::write(dest, MODEL_BYTES)?;
+                        Ok(())
+                    }
+                    Fetch::Fail => Err(SrttyError::Network("download failed: HTTP 404".into())),
+                    Fetch::Interrupt => Err(SrttyError::Interrupted),
+                }
+            }
+        }
+
+        /// Passes or fails every test, and counts its calls.
+        struct FakeLocalTester {
+            calls: AtomicUsize,
+            passes: bool,
+        }
+
+        impl FakeLocalTester {
+            fn new(passes: bool) -> Self {
+                Self {
+                    calls: AtomicUsize::new(0),
+                    passes,
+                }
+            }
+        }
+
+        #[async_trait]
+        impl LocalTester for FakeLocalTester {
+            async fn test(&self, model_path: &Path) -> Result<LocalTestOutcome, SrttyError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                assert!(model_path.is_file(), "{}", model_path.display());
+                if self.passes {
+                    Ok(LocalTestOutcome {
+                        words: 87,
+                        secs: 4.26,
+                        language: Some("fr".into()),
+                    })
+                } else {
+                    Err(SrttyError::Config("cannot load the whisper model".into()))
+                }
+            }
+        }
+
+        /// Everything a local `setup` borrows.
+        struct Local {
+            dir: tempfile::TempDir,
+            catalog: Vec<CatalogModel>,
+            fetcher: FakeFetcher,
+            tester: FakeLocalTester,
+            api_tester: FakeTester,
+        }
+
+        impl Local {
+            fn new(fetch: Fetch, test_passes: bool) -> Self {
+                Self {
+                    dir: tempfile::tempdir().unwrap(),
+                    catalog: test_catalog(),
+                    fetcher: FakeFetcher::new(fetch),
+                    tester: FakeLocalTester::new(test_passes),
+                    api_tester: FakeTester::new(usable()),
+                }
+            }
+
+            fn models_dir(&self) -> PathBuf {
+                self.dir.path().join("models")
+            }
+
+            fn model_path(&self) -> PathBuf {
+                self.models_dir().join("ggml-tiny-test.bin")
+            }
+
+            fn ctx(&self) -> SetupContext<'_> {
+                SetupContext {
+                    config_path: self.dir.path().join("config.toml"),
+                    cache_dir: self.dir.path().join("cache"),
+                    // Never reached: the local flow does not refresh compat.json.
+                    compat_url: "http://127.0.0.1:9/compat.json".into(),
+                    env: &env_empty,
+                    tester: &self.api_tester,
+                    local: LocalSetup {
+                        models_dir: self.models_dir(),
+                        catalog: &self.catalog,
+                        fetcher: &self.fetcher,
+                        tester: &self.tester,
+                    },
+                }
+            }
+
+            fn config(&self) -> Config {
+                Config::load(&self.dir.path().join("config.toml")).unwrap()
+            }
+        }
+
+        fn assert_local_provider(cfg: &Config, model_path: &Path) {
+            assert_eq!(cfg.default_provider.as_deref(), Some("local"));
+            let provider = &cfg.providers["local"];
+            assert_eq!(provider.kind, ProviderKind::Local);
+            assert_eq!(provider.model_path.as_deref(), Some(model_path));
+            assert_eq!(provider.api_key_env, None);
+            assert_eq!(provider.base_url, None);
+            assert_eq!(provider.model, None);
+        }
+
+        #[tokio::test]
+        async fn local_option_is_available_with_the_feature() {
+            let l = Local::new(Fetch::Write, true);
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert_eq!(
+                p.options[0][LOCAL],
+                "Local Whisper (offline, runs on this machine)"
+            );
+            assert_eq!(p.asked(PROVIDER_MENU), 1);
+        }
+
+        #[tokio::test]
+        async fn local_download_flow_writes_a_local_provider() {
+            let l = Local::new(Fetch::Write, true);
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(true),
+            ]);
+
+            let done = run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert!(done.written);
+            assert_eq!(l.fetcher.calls(), 1);
+            assert_eq!(l.tester.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                p.options[1],
+                [
+                    format!("{:<20} {:>7}  test model", "tiny-test", "0 MB"),
+                    "Use a model file I already have".to_string(),
+                ]
+            );
+            let dir = l.models_dir().display().to_string();
+            let size = crate::local::catalog::human_size(15);
+            assert_eq!(
+                p.prompts,
+                [
+                    PROVIDER_MENU.to_string(),
+                    MODEL_MENU.to_string(),
+                    format!("Download ggml-tiny-test.bin ({size}) from Hugging Face to {dir}?"),
+                    TEST_QUESTION.to_string(),
+                ]
+            );
+            assert_local_provider(&l.config(), &l.model_path());
+            assert!(
+                !p.prompts.iter().any(|m| m.contains("Environment variable")),
+                "{:?}",
+                p.prompts
+            );
+            assert!(
+                p.said
+                    .contains(&"✔ Test passed: 87 words in 4.3 s (language: fr).".to_string()),
+                "{:?}",
+                p.said
+            );
+            let path = l.dir.path().join("config.toml").display().to_string();
+            assert!(p.said.contains(&format!("Wrote {path}.")), "{:?}", p.said);
+        }
+
+        #[tokio::test]
+        async fn local_already_downloaded_skips_fetch() {
+            let l = Local::new(Fetch::Write, true);
+            std::fs::create_dir_all(l.models_dir()).unwrap();
+            std::fs::write(l.model_path(), MODEL_BYTES).unwrap();
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert!(
+                p.options[1][TINY].ends_with("test model  (downloaded)"),
+                "{:?}",
+                p.options[1]
+            );
+            assert!(
+                p.said
+                    .contains(&"✔ ggml-tiny-test.bin is already downloaded.".to_string()),
+                "{:?}",
+                p.said
+            );
+            assert_eq!(l.fetcher.calls(), 0);
+            assert!(!p.prompts.iter().any(|m| m.starts_with("Download ")));
+            assert_local_provider(&l.config(), &l.model_path());
+        }
+
+        #[tokio::test]
+        async fn local_declined_download_returns_to_the_menu() {
+            let l = Local::new(Fetch::Write, true);
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(false),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert_eq!(p.asked(MODEL_MENU), 2);
+            assert_eq!(l.fetcher.calls(), 1);
+            assert_local_provider(&l.config(), &l.model_path());
+        }
+
+        #[tokio::test]
+        async fn local_download_failure_is_reported_and_asked_again() {
+            let l = Local::new(Fetch::Fail, true);
+            let own = l.dir.path().join("own.bin");
+            std::fs::write(&own, MODEL_BYTES).unwrap();
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Select(OWN_FILE),
+                text(own.to_str().unwrap()),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert!(
+                p.said.contains(&"✘ Download failed: HTTP 404".to_string()),
+                "{:?}",
+                p.said
+            );
+            assert_eq!(p.asked(MODEL_MENU), 2);
+            assert!(!l.model_path().exists());
+            assert_local_provider(&l.config(), &own);
+        }
+
+        #[tokio::test]
+        async fn local_existing_file_is_validated() {
+            let l = Local::new(Fetch::Write, true);
+            let mp3 = l.dir.path().join("song.mp3");
+            std::fs::write(&mp3, b"ID3\x04\x00 not a model").unwrap();
+            // A model under the home directory, given as `~/…`.
+            let home = etcetera::home_dir().unwrap();
+            let in_home = tempfile::Builder::new()
+                .prefix(".srtty-test-")
+                .suffix(".bin")
+                .tempfile_in(&home)
+                .unwrap();
+            std::fs::write(in_home.path(), MODEL_BYTES).unwrap();
+            let name = in_home.path().file_name().unwrap().to_str().unwrap();
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(OWN_FILE),
+                text(l.dir.path().join("missing.bin").to_str().unwrap()),
+                text(mp3.to_str().unwrap()),
+                text(&format!("~/{name}")),
+                Answer::Confirm(true),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert_eq!(
+                p.validator_errors,
+                [
+                    "No file at that path.",
+                    "That file is not a ggml Whisper model."
+                ]
+            );
+            assert!(
+                p.prompts
+                    .contains(&"Path to a ggml model file:".to_string())
+            );
+            assert_eq!(l.fetcher.calls(), 0);
+            assert_eq!(l.tester.calls.load(Ordering::SeqCst), 1);
+            assert_local_provider(&l.config(), &home.join(name));
+        }
+
+        #[tokio::test]
+        async fn local_failed_test_can_be_rejected() {
+            let l = Local::new(Fetch::Write, false);
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(true),
+                Answer::Confirm(false),
+                Answer::Select(TINY),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert!(
+                p.said.contains(
+                    &"✘ The model could not be used: cannot load the whisper model".to_string()
+                ),
+                "{:?}",
+                p.said
+            );
+            assert_eq!(p.asked("Keep this model anyway?"), 1);
+            assert_eq!(p.asked(MODEL_MENU), 2);
+            assert_eq!(l.fetcher.calls(), 1);
+            assert_local_provider(&l.config(), &l.model_path());
+        }
+
+        #[tokio::test]
+        async fn local_interrupt_during_download_propagates() {
+            let l = Local::new(Fetch::Interrupt, true);
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+            ]);
+
+            let err = run_setup(&mut p, &l.ctx()).await.unwrap_err();
+
+            assert!(matches!(err, SrttyError::Interrupted), "{err}");
+            assert!(!l.dir.path().join("config.toml").exists());
+        }
     }
 }

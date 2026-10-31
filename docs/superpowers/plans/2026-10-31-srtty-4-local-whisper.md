@@ -500,4 +500,38 @@ Adrien a validé le plan avec les options recommandées :
 
 ## Écarts décidés pendant l'exécution
 
-(À remplir pendant l'exécution.)
+Ces écarts ont été décidés pendant l'exécution, à partir des relectures par tâche, de la revue finale de la branche et de la validation réelle. Ils priment sur le texte des tâches ci-dessus.
+
+- **Timestamps DTW** (décision 4, validation) :
+  - Les timestamps de tokens de whisper.cpp sont jointifs et absorbent les pauses : sur « La Barbe bleue », un mot qui suit une pause de 0,7 s commençait 0,69 s trop tôt, au-delà du critère du §6.
+  - On passe donc par DTW (`t_dtw`) quand le préréglage d'alignement se déduit du nom du fichier : `ggml-<nom>[-qN_N].bin` pour tiny, base, small, medium, large-v1/v2/v3 et large-v3-turbo, avec ou sans `.en`. Ça couvre tout le catalogue. Un autre fichier reprend les timestamps de tokens, sans message.
+  - Un mot commence au `t_dtw` de son premier token, et garde la durée estimée par `t0`/`t1`.
+  - Résultat : médiane d'écart de 0,07 s, 99 % des débuts sous 0,5 s, les 5 points de contrôle entre +0,04 et +0,12 s.
+  - Coût : environ 10 à 16 % de temps en plus et 35 Mo par état.
+- **Langue figée** (décision 13, revue finale) :
+  - On ne fige qu'une détection sûre. Sans `--language`, une détection explicite (`lang_detect`) précède `full` ; la langue n'est passée à whisper et figée que si sa probabilité atteint 0,8. Sinon, le morceau part en `auto` et le suivant réessaie.
+  - Quand une langue est figée, l'utilisateur le voit : avertissement `language detected as <code>; pass --language to force another one`, dans le flux d'événements et dans `warnings` du JSON.
+- **Abandon** (décision 6) :
+  - whisper.cpp 1.8.3 ne lit le drapeau qu'entre deux passes de l'encodeur ou du décodeur, jamais pendant le calcul ggml, le calcul du spectrogramme ou la détection de langue.
+  - Le CPU est donc libéré environ 1 s après l'abandon avec tiny, plus tard avec un gros modèle. La sortie sur Ctrl-C reste immédiate (70 ms mesurées), puisque `main` sort par `process::exit`.
+  - Le test d'abandon tolère 10 s.
+- **Deux blocs `unsafe`** et non un seul : le corps du callback, et l'appel aux deux setters `unsafe fn` de whisper-rs qui l'enregistrent.
+- **`check_language`** :
+  - n'accepte que les codes courts de whisper (`get_lang_id` accepte aussi `french`) ;
+  - refuse un octet NUL, sur lequel whisper-rs paniquait ;
+  - installe les hooks de log, sans quoi whisper.cpp écrivait `unknown language` sur stderr.
+- **Transcription** : on retire les octets NUL du prompt (panique de whisper-rs), et on ignore les segments sans texte, pour qu'un silence reste `NoSpeech`.
+- **Téléchargement** :
+  - `setup` supprime les `.srtty-*.part` restés dans le dossier des modèles avant de télécharger. Un kill, une fermeture du terminal ou une coupure de courant laissaient un fichier caché, jusqu'à 1,6 Go.
+  - Le modèle téléchargé garde le mode 0600 du fichier temporaire.
+- **Cache** : l'identité d'un modèle local est `<nom>#<taille>#<mtime>`, et non `<nom>#<taille>` (deux modèles affinés peuvent avoir le même nom et la même taille).
+- **`setup` local** :
+  - `LocalSetup` reçoit le répertoire home, pour que les tests n'écrivent pas dans le vrai home ;
+  - un chemin relatif devient absolu avant d'être écrit ;
+  - un test de l'extrait sans aucun mot compte comme un échec ;
+  - un fichier présent mais abîmé est annoncé avant d'être retéléchargé ;
+  - la vérification du hash affiche `Checking <file>…`, tourne dans `spawn_blocking` et reste interruptible par Ctrl-C ;
+  - une erreur de lecture pendant cette vérification est signalée, et le fichier est traité comme incomplet.
+- **Sans la feature** : un fournisseur local sans `model_path` donne aussi le message `the local backend is not available in this build; …`, au lieu de conseiller `srtty setup`.
+- **`config show`** n'affiche plus `request_mode` pour un fournisseur local. L'aide de `--model` dit qu'il s'agit d'un chemin pour un fournisseur local.
+- **Parallélisme** : la décision 2 est gardée, mesures à l'appui (validation). Le premier morceau, transcrit seul, n'utilise que `threads_per_job` threads. Une amélioration possible est reportée.

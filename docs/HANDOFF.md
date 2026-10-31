@@ -4,12 +4,12 @@ Journal antéchronologique : l'état courant en haut, l'historique en bas. Mettr
 
 ## État courant (2026-10-31)
 
-- Plans 1, 2 et 3 livrés et mergés (PR #1, #2, #3). **Plan 4 exécuté** sur `feat/plan-4-local-whisper`, PR ouverte : à faire merger par Adrien.
+- Plans 1 à 4 livrés et mergés (PR #1 à #4).
 - Tests :
   - sans feature : 271 unitaires et 25 de bout en bout ;
   - avec `--features local` : 316 unitaires, 24 de bout en bout et 6 tests locaux.
   - fmt et clippy `-D warnings` sont propres dans les deux configurations.
-- Prochain travail : **plan 5**, la distribution. À démarrer depuis `main` une fois la PR du plan 4 mergée.
+- Prochain travail : **plan 5**, la distribution, à démarrer depuis `main`. Aucune session n'est en cours dessus.
 - Avant chaque commit, vérifier les **deux configurations** : `cargo clippy --all-targets [--features local] -- -D warnings` et `cargo test [--features local]`. Les tests qui demandent un vrai modèle lisent `SRTTY_TEST_WHISPER_MODEL` (par exemple `/tmp/srtty-plan4/models/ggml-tiny.bin`, 78 Mo, SHA-256 dans `src/local/catalog.rs`), et passent en `skipped` sans elle.
 - La CI hebdomadaire `compat` tourne : chaque lundi à 05:17 UTC, plus un déclenchement manuel. Premier run réussi le 2026-10-31 (0,063 $). Le secret `OPENROUTER_API_KEY` est configuré dans le dépôt.
 
@@ -99,7 +99,7 @@ Ces fichiers sont gros : les lire par plages (`grep -n '^#' <fichier>`, puis Rea
    - `--language` absent en local : détection sur le premier morceau, puis langue figée. La revue finale a ajouté un seuil de confiance et un avertissement ;
    - bloc `unsafe` du callback d'abandon accepté.
 
-Décision ouverte : faut-il valider `large-v3-turbo-q5_0` (574 Mo) sur « La Barbe bleue » pour juger la qualité en français ? `base` fait beaucoup de substitutions.
+`large-v3-turbo-q5_0` a été validé sur une vraie visio (voir `docs/validation/2026-10-31-plan4.md`, scénario 8) : bien meilleur que `base` sur le vocabulaire métier, mais environ 1,5 fois la durée de l'audio sur CPU. Aucune décision ouverte.
 
 ## Points reportés
 

@@ -18,8 +18,9 @@ use crate::run::{MAX_RETRIES, mm_ss};
 pub const MAX_CHUNK_ROWS: u16 = 8;
 /// Most rows the progress band may span.
 pub const MAX_CELL_ROWS: u16 = 3;
-/// Narrowest terminal that gets the full frame.
-pub const MIN_WIDTH: u16 = 40;
+/// Narrowest terminal that gets the full frame: the stage line with one-space
+/// separators (49 columns) plus the borders and padding of its box.
+pub const MIN_WIDTH: u16 = 53;
 
 /// Cells of the progress band: size of one cell, gap between cells, how many
 /// chunks a cell stands for, and how many rows the band spans.
@@ -722,6 +723,8 @@ mod tests {
     fn layout_degrades_to_compact() {
         assert_eq!(plan_layout(20, size(80, 10)), Layout::Compact);
         assert_eq!(plan_layout(8, size(39, 40)), Layout::Compact);
+        assert_eq!(plan_layout(8, size(52, 40)), Layout::Compact);
+        assert!(matches!(plan_layout(8, size(53, 40)), Layout::Full { .. }));
         assert_eq!(plan_layout(0, size(80, 5)), Layout::Compact);
         assert_eq!(Layout::Compact.height(), 1);
     }

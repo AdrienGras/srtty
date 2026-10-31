@@ -79,6 +79,11 @@ pub enum Event {
 /// Receives run events.
 pub trait Reporter: Send + Sync {
     fn event(&self, e: &Event);
+    /// Hands the terminal back before an interactive prompt; the next event takes it again.
+    fn suspend(&self) {}
+    /// Erases any live display and restores the cursor. Called once a run ends,
+    /// whatever its outcome, before anything else is printed.
+    fn finish(&self) {}
 }
 
 /// Writes one plain line per event, without colors or cursor control.

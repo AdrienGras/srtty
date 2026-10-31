@@ -50,11 +50,11 @@ fn stderr_tail(stderr: &[u8]) -> String {
     text.chars().skip(skip).collect()
 }
 
-/// Run `bin` with `args`; return (stdout, stderr) on success, an `Ffmpeg` error otherwise.
+/// Run `bin` with `args`; return (raw stdout, stderr) on success, an `Ffmpeg` error otherwise.
 ///
 /// On Unix the child leads its own process group, so a terminal Ctrl-C reaches
 /// only srtty, which cancels the run and kills the child through `kill_on_drop`.
-async fn run(bin: &str, args: &[&std::ffi::OsStr]) -> Result<(String, String), SrttyError> {
+async fn run(bin: &str, args: &[&std::ffi::OsStr]) -> Result<(Vec<u8>, String), SrttyError> {
     let mut cmd = Command::new(bin);
     cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
     #[cfg(unix)]
@@ -74,12 +74,12 @@ async fn run(bin: &str, args: &[&std::ffi::OsStr]) -> Result<(String, String), S
         )));
     }
     Ok((
-        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.stdout,
         String::from_utf8_lossy(&out.stderr).into_owned(),
     ))
 }
 
-async fn ffmpeg(args: &[&std::ffi::OsStr]) -> Result<(String, String), SrttyError> {
+async fn ffmpeg(args: &[&std::ffi::OsStr]) -> Result<(Vec<u8>, String), SrttyError> {
     let mut full: Vec<&std::ffi::OsStr> = ["-nostdin", "-hide_banner"]
         .iter()
         .map(std::ffi::OsStr::new)
@@ -101,7 +101,7 @@ pub async fn probe_duration(path: &Path) -> Result<f64, SrttyError> {
         path.as_os_str(),
     ];
     let (stdout, _) = run("ffprobe", &args).await?;
-    stdout
+    String::from_utf8_lossy(&stdout)
         .trim()
         .parse::<f64>()
         .map_err(|_| SrttyError::Ffmpeg(format!("could not read duration of {}", path.display())))
@@ -151,6 +151,27 @@ pub async fn extract_audio(input: &Path, out: &Path) -> Result<(), SrttyError> {
     args.extend(OPUS_ARGS.iter().map(std::ffi::OsStr::new));
     args.extend(["-f".as_ref(), "ogg".as_ref(), out.as_os_str()]);
     ffmpeg(&args).await.map(|_| ())
+}
+
+/// Decode `path` to mono 16 kHz PCM, as little-endian `f32` samples.
+#[cfg(feature = "local")]
+pub async fn decode_pcm_f32(path: &Path) -> Result<Vec<f32>, SrttyError> {
+    let args: [&std::ffi::OsStr; 11] = [
+        "-v".as_ref(),
+        "error".as_ref(),
+        "-i".as_ref(),
+        path.as_os_str(),
+        "-f".as_ref(),
+        "f32le".as_ref(),
+        "-ac".as_ref(),
+        "1".as_ref(),
+        "-ar".as_ref(),
+        "16000".as_ref(),
+        "-".as_ref(),
+    ];
+    let (stdout, _) = ffmpeg(&args).await?;
+    let (samples, _) = stdout.as_chunks::<4>();
+    Ok(samples.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 
 /// Detect silences of at least 0.4 s below `threshold_db`.
@@ -410,6 +431,25 @@ mod tests {
         assert_eq!(err.exit_code(), 3);
     }
 
+    #[cfg(feature = "local")]
+    #[tokio::test]
+    async fn decode_pcm_f32_reads_16k_mono() {
+        let d = tempfile::tempdir().unwrap();
+        let ogg = d.path().join("tone.ogg");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .args(["sine=frequency=440:duration=1", "-ar", "16000", "-ac", "1"])
+            .args(["-c:a", "libopus"])
+            .arg(&ogg)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let pcm = decode_pcm_f32(&ogg).await.unwrap();
+        assert!((15_800..=16_200).contains(&pcm.len()), "{}", pcm.len());
+        let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.1, "peak {peak}");
+    }
+
     #[test]
     fn ensure_ffmpeg_ok_on_this_machine() {
         ensure_ffmpeg().unwrap();
@@ -420,6 +460,7 @@ mod tests {
     #[tokio::test]
     async fn children_run_in_their_own_process_group() {
         let (stat, _) = run("cat", &["/proc/self/stat".as_ref()]).await.unwrap();
+        let stat = String::from_utf8(stat).unwrap();
         // Fields after the `(comm)` field: state, ppid, pgrp, ...
         let pid: u32 = stat.split(' ').next().unwrap().parse().unwrap();
         let after_comm = &stat[stat.rfind(')').unwrap() + 2..];

@@ -58,9 +58,8 @@ pub struct RunRequest {
     pub provider: String,
 }
 
-/// Extracts the audio of `input` into a temporary directory, then measures its
-/// duration and finds its silences.
-pub async fn prepare(input: &Path, reporter: &dyn Reporter) -> Result<Prepared, SrttyError> {
+/// Checks that `input` is an existing file.
+pub fn check_input(input: &Path) -> Result<(), SrttyError> {
     if !input.exists() {
         return Err(SrttyError::Usage(format!(
             "input file not found: {}",
@@ -73,6 +72,13 @@ pub async fn prepare(input: &Path, reporter: &dyn Reporter) -> Result<Prepared, 
             input.display()
         )));
     }
+    Ok(())
+}
+
+/// Extracts the audio of `input` into a temporary directory, then measures its
+/// duration and finds its silences.
+pub async fn prepare(input: &Path, reporter: &dyn Reporter) -> Result<Prepared, SrttyError> {
+    check_input(input)?;
     ensure_ffmpeg()?;
 
     reporter.event(&Event::StageStarted(Stage::Extract));

@@ -25,10 +25,10 @@ use crate::media::plan_chunks;
 use crate::output::speaker_prefix_reserve;
 use crate::paths;
 use crate::report::{Event, PlainReporter, Reporter, Summary};
-use crate::run::{RunRequest, SILENCE_WINDOW_S, prepare, run};
+use crate::run::{RunRequest, SILENCE_WINDOW_S, check_input, prepare, run};
 use crate::setup::{InquirePrompter, LiveTester, SetupContext, run_setup};
-use crate::transcribe::TranscribeOptions;
 use crate::transcribe::openai::{OpenAiCompatible, is_openrouter};
+use crate::transcribe::{TranscribeOptions, Transcriber};
 
 /// Longest audio `--speakers` accepts, in seconds (75 minutes).
 const SPEAKERS_MAX_DURATION_S: f64 = 4500.0;
@@ -244,8 +244,12 @@ pub(crate) fn print_stdout(text: &str) -> Result<(), SrttyError> {
     Ok(())
 }
 
+pub(crate) const LOCAL_UNAVAILABLE: &str = "the local backend is not available in this build; reinstall with: cargo install srtty --features local";
+pub(crate) const LOCAL_NO_SPEAKERS: &str = "--speakers is not supported by the local backend; use an API provider with a diarization model (see `srtty models`)";
+
+#[cfg(not(feature = "local"))]
 fn local_unavailable() -> SrttyError {
-    SrttyError::Config("local backend is not available in this build".into())
+    SrttyError::Config(LOCAL_UNAVAILABLE.into())
 }
 
 /// What a run needs once its settings are checked.
@@ -274,8 +278,22 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     })?;
     let r = load_settings(&cli)?;
     let backend = r.backend()?;
-    if matches!(backend, Backend::Local { .. }) {
-        return Err(local_unavailable());
+    let local = matches!(backend, Backend::Local { .. });
+    if local {
+        if !cfg!(feature = "local") {
+            return Err(SrttyError::Config(LOCAL_UNAVAILABLE.into()));
+        }
+        if cli.speakers {
+            return Err(SrttyError::Usage(LOCAL_NO_SPEAKERS.into()));
+        }
+    }
+    check_input(&input)?;
+    #[cfg(feature = "local")]
+    if let Backend::Local { model_path } = &backend {
+        crate::local::check_ggml_magic(model_path)?;
+        if let Some(language) = &r.language {
+            crate::local::check_language(language)?;
+        }
     }
 
     // Before the dashboard opens: an error here must not leave it on screen.
@@ -336,7 +354,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     reporter.finish();
 
     match outcome? {
-        Outcome::DryRun { plan, estimate } => print_dry_run(&plan, estimate, cli.json),
+        Outcome::DryRun { plan, estimate } => print_dry_run(&plan, estimate, cli.json, local),
         Outcome::Done(summary) if cli.json => {
             print_stdout(&serde_json::to_string(&summary).map_err(std::io::Error::from)?)
         }
@@ -369,24 +387,21 @@ async fn run_job(
     started: Instant,
 ) -> Result<Outcome, SrttyError> {
     let Job { input, r, backend } = job;
-    let Backend::Api {
-        base_url,
-        key,
-        mode,
-    } = backend
-    else {
-        return Err(local_unavailable());
-    };
     let cache_dir = paths::cache_dir();
     let compat = CompatList::load(&cache_dir);
-    let entry = provider_key(&base_url).and_then(|provider| compat.find(provider, &r.model));
-
     let mut warnings = Vec::new();
-    if r.prompt.is_some() && mode == RequestMode::Multipart && is_openrouter(&base_url) {
-        let warning = "OpenRouter ignores --prompt in multipart mode".to_string();
-        reporter.event(&Event::Warning(warning.clone()));
-        warnings.push(warning);
-    }
+    // Compatibility data and `--prompt` handling only concern API providers.
+    let entry = match &backend {
+        Backend::Api { base_url, mode, .. } => {
+            if r.prompt.is_some() && *mode == RequestMode::Multipart && is_openrouter(base_url) {
+                let warning = "OpenRouter ignores --prompt in multipart mode".to_string();
+                reporter.event(&Event::Warning(warning.clone()));
+                warnings.push(warning);
+            }
+            provider_key(base_url).and_then(|provider| compat.find(provider, &r.model))
+        }
+        Backend::Local { .. } => None,
+    };
 
     let prep = tokio::select! {
         biased;
@@ -437,31 +452,73 @@ async fn run_job(
         prompt: r.prompt.clone(),
         provider_options: provider_options.clone(),
     };
+    let parallel = parallelism(r.provider.kind, r.jobs, available_cores(), GPU_BUILD);
+    // A local model is identified by its file name and size, so replacing the
+    // file invalidates the cache without hashing it.
+    let (cache_base_url, cache_model) = match &backend {
+        Backend::Api { base_url, .. } => (base_url.clone(), r.model.clone()),
+        Backend::Local { model_path } => (
+            "local".to_string(),
+            format!("{}#{}", r.model, std::fs::metadata(model_path)?.len()),
+        ),
+    };
     let req = RunRequest {
         formats: cli.format.clone(),
         output: cli.output.clone(),
         chunks_override,
         target_s: r.target_s,
-        jobs: parallelism(r.provider.kind, r.jobs, available_cores(), GPU_BUILD).jobs,
+        jobs: parallel.jobs,
         opts,
         rules: cue_rules(&r.subtitles, cli.speakers),
         speaker_label: r.subtitles.speaker_label.clone(),
         cache: ChunkCache::new(&cache_dir, !cli.no_cache),
         cache_params: CacheParams {
-            base_url: base_url.clone(),
-            model: r.model.clone(),
+            base_url: cache_base_url,
+            model: cache_model,
             language: r.language.clone(),
             prompt: r.prompt.clone(),
             provider_options,
         },
         provider: r.provider_name.clone(),
     };
-    let transcriber = Arc::new(OpenAiCompatible::new(base_url, key, r.model, mode)?);
+    let transcriber: Arc<dyn Transcriber> = match backend {
+        Backend::Api {
+            base_url,
+            key,
+            mode,
+        } => Arc::new(OpenAiCompatible::new(base_url, key, r.model, mode)?),
+        Backend::Local { model_path } => {
+            load_local(&model_path, parallel.threads_per_job.unwrap_or(1), &cancel).await?
+        }
+    };
     let mut summary = run(prep, req, transcriber, reporter, cancel).await?;
     summary.elapsed_s = started.elapsed().as_secs_f64();
     warnings.append(&mut summary.warnings);
     summary.warnings = warnings;
     Ok(Outcome::Done(summary))
+}
+
+/// Loads the whisper model, giving up if the run is cancelled meanwhile.
+#[cfg(feature = "local")]
+async fn load_local(
+    model_path: &Path,
+    threads: usize,
+    cancel: &CancellationToken,
+) -> Result<Arc<dyn Transcriber>, SrttyError> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(SrttyError::Interrupted),
+        loaded = crate::local::LocalWhisper::load(model_path, threads) => Ok(Arc::new(loaded?)),
+    }
+}
+
+#[cfg(not(feature = "local"))]
+async fn load_local(
+    _model_path: &Path,
+    _threads: usize,
+    _cancel: &CancellationToken,
+) -> Result<Arc<dyn Transcriber>, SrttyError> {
+    Err(local_unavailable())
 }
 
 /// SIGINT and SIGTERM as one stream: `kill` or `timeout` stop the run like
@@ -520,7 +577,12 @@ struct DryRun<'a> {
     estimated_cost_usd: Option<f64>,
 }
 
-fn print_dry_run(plan: &[(f64, f64)], estimate: Option<f64>, json: bool) -> Result<(), SrttyError> {
+fn print_dry_run(
+    plan: &[(f64, f64)],
+    estimate: Option<f64>,
+    json: bool,
+    local: bool,
+) -> Result<(), SrttyError> {
     if json {
         let dry_run = DryRun {
             dry_run: true,
@@ -537,6 +599,7 @@ fn print_dry_run(plan: &[(f64, f64)], estimate: Option<f64>, json: bool) -> Resu
             .map(|(i, (start, end))| format!("  #{} {start:.1}-{end:.1} s", i + 1)),
     );
     lines.push(match estimate {
+        _ if local => "no API cost: the local backend runs on this machine".into(),
         Some(usd) => format!("estimated cost: ${usd:.4}"),
         None => "cost unknown: the model is not in the compatibility list".into(),
     });

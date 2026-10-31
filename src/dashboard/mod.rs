@@ -192,6 +192,12 @@ impl<B: Backend + Send + 'static> Reporter for Dashboard<B> {
         let now = self.started.elapsed();
         let mut inner = lock(&self.inner);
         inner.state.apply(e, now);
+        // A Ctrl-C during the cost question must not reopen the viewport: its
+        // cursor position query would read the terminal the blocked prompt
+        // is reading, and could leave it in raw mode.
+        if inner.suspended && matches!(e, Event::Cancelling) {
+            return;
+        }
         inner.suspended = false;
         inner.draw(now);
     }
@@ -386,6 +392,17 @@ mod tests {
         d.draw();
         assert_eq!(d.viewport_height(), Some(6));
         assert_eq!(d.screen_text().matches("warning: w1").count(), 1);
+    }
+
+    #[test]
+    fn cancelling_does_not_reopen_a_suspended_dashboard() {
+        let d = Dashboard::open(test_screen(80, 40), "a".into(), "m".into()).unwrap();
+        d.suspend();
+        d.event(&Event::Cancelling);
+        assert_eq!(d.viewport_height(), None);
+        d.draw();
+        assert_eq!(d.viewport_height(), None);
+        assert!(lock(&d.inner).state.cancelling);
     }
 
     #[test]

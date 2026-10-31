@@ -275,6 +275,8 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         ))
     })?;
 
+    // Before the dashboard opens: an error here must not leave it on screen.
+    let signals = stop_signals()?;
     let mut mode = display_mode(
         cli.quiet,
         cli.json,
@@ -291,7 +293,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
                     dashboard.start_ticker(TICK);
                     dashboard
                 }
-                // The terminal did not answer the cursor position query.
+                // The terminal could not host the viewport.
                 Err(_) => {
                     mode = DisplayMode::Plain;
                     Arc::new(PlainReporter::new(Box::new(std::io::stderr())))
@@ -301,12 +303,8 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     };
 
     let cancel = CancellationToken::new();
-    let interrupts = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let signals = futures::stream::unfold(interrupts, |mut sig| async move {
-        sig.recv().await.map(|()| ((), sig))
-    });
     tokio::spawn(on_interrupts(
-        Box::pin(signals),
+        signals,
         {
             let (cancel, reporter) = (cancel.clone(), Arc::clone(&reporter));
             move || {
@@ -315,11 +313,18 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
             }
         },
         {
-            let reporter = Arc::clone(&reporter);
+            let (reporter, json) = (Arc::clone(&reporter), cli.json);
             move || {
                 reporter.finish();
-                eprintln!("interrupted");
-                std::process::exit(130);
+                let code = SrttyError::Interrupted.exit_code();
+                if json {
+                    // Same shape as the error report of `main`.
+                    let report = serde_json::json!({ "error": "interrupted", "exit_code": code });
+                    let _ = print_stdout(&report.to_string());
+                } else {
+                    eprintln!("interrupted");
+                }
+                std::process::exit(code);
             }
         },
     ));
@@ -466,6 +471,28 @@ async fn run_job(
     Ok(Outcome::Done(summary))
 }
 
+/// SIGINT, SIGTERM and SIGHUP as one stream: `kill`, `timeout` or a closed
+/// terminal stop the run like Ctrl-C, so the dashboard is erased. SIGQUIT keeps
+/// its default behavior.
+fn stop_signals() -> std::io::Result<impl futures::Stream<Item = ()> + Unpin> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let streams = [
+        SignalKind::interrupt(),
+        SignalKind::terminate(),
+        SignalKind::hangup(),
+    ]
+    .into_iter()
+    .map(|kind| {
+        let sig = signal(kind)?;
+        Ok(Box::pin(futures::stream::unfold(
+            sig,
+            |mut sig| async move { sig.recv().await.map(|()| ((), sig)) },
+        )))
+    })
+    .collect::<std::io::Result<Vec<_>>>()?;
+    Ok(futures::stream::select_all(streams))
+}
+
 /// Runs `first` on the first item of `signals` and `second` on the next one.
 ///
 /// A forced exit (`second`) skips the normal cleanup: temporary files, such as
@@ -581,6 +608,22 @@ mod tests {
         tx.unbounded_send(()).unwrap();
         task.await.unwrap();
         assert_eq!((first.load(SeqCst), second.load(SeqCst)), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn terminate_and_hangup_count_as_interrupts() {
+        use futures::StreamExt;
+        let mut signals = stop_signals().unwrap();
+        let pid = std::process::id().to_string();
+        for signal in ["-TERM", "-HUP"] {
+            let sent = std::process::Command::new("kill")
+                .args([signal, &pid])
+                .status()
+                .unwrap();
+            assert!(sent.success());
+            let got = tokio::time::timeout(Duration::from_secs(5), signals.next()).await;
+            assert_eq!(got, Ok(Some(())), "{signal}");
+        }
     }
 
     #[test]

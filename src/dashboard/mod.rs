@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
 use ratatui::style::{Color, Style};
@@ -259,11 +259,14 @@ fn viewport_height<B: Backend>(terminal: &mut Terminal<B>) -> u16 {
 }
 
 /// Clears the viewport and leaves the cursor visible at its top-left corner,
-/// where the next output (or the next viewport) starts.
+/// where the next output (or the next viewport) starts. `Terminal::clear` is
+/// avoided: it first queries the cursor position, and gives up before erasing
+/// anything if the terminal is slow to answer.
 fn erase<B: Backend>(terminal: &mut Terminal<B>) {
-    let _ = terminal.clear();
     let origin = terminal.get_frame().area().as_position();
     let _ = terminal.set_cursor_position(origin);
+    let _ = terminal.backend_mut().clear_region(ClearType::AfterCursor);
+    let _ = Backend::flush(terminal.backend_mut());
     let _ = terminal.show_cursor();
 }
 

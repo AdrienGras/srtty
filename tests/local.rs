@@ -192,6 +192,11 @@ fn e2e_local_json_run_is_offline_and_quiet() {
         serde_json::from_str(&stdout).expect("stdout is one JSON object");
     assert!(summary["cost_usd"].is_null(), "{stdout}");
     assert_eq!(summary["provider"], "local", "{stdout}");
+    assert_eq!(
+        summary["warnings"],
+        serde_json::json!(["language detected as fr; pass --language to force another one"]),
+        "{stdout}"
+    );
 
     let srt = std::fs::read_to_string(input.with_extension("srt")).unwrap();
     let cues = srt.split("\n\n").filter(|b| !b.trim().is_empty()).count();

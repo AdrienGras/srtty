@@ -3,7 +3,7 @@
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ratatui::crossterm::style::Stylize;
@@ -489,6 +489,9 @@ async fn run_job(
         },
         provider: r.provider_name.clone(),
     };
+    // The local backend tells when it pins a detected language; the warning is
+    // shown during the run and kept for the summary.
+    let language_warnings = Arc::new(Mutex::new(Vec::new()));
     let transcriber: Arc<dyn Transcriber> = match backend {
         Backend::Api {
             base_url,
@@ -496,14 +499,36 @@ async fn run_job(
             mode,
         } => Arc::new(OpenAiCompatible::new(base_url, key, r.model, mode)?),
         Backend::Local { model_path } => {
-            load_local(&model_path, parallel.threads_per_job.unwrap_or(1), &cancel).await?
+            let threads = parallel.threads_per_job.unwrap_or(1);
+            let notify = language_warning(Arc::clone(&reporter), Arc::clone(&language_warnings));
+            load_local(&model_path, threads, notify, &cancel).await?
         }
     };
     let mut summary = run(prep, req, transcriber, reporter, cancel).await?;
     summary.elapsed_s = started.elapsed().as_secs_f64();
+    warnings.append(&mut language_warnings.lock().unwrap_or_else(|p| p.into_inner()));
     warnings.append(&mut summary.warnings);
     summary.warnings = warnings;
     Ok(Outcome::Done(summary))
+}
+
+/// Called with the language code when the local backend pins the language it detected.
+type LanguageNotifier = Box<dyn Fn(&str) + Send + Sync>;
+
+/// Reports a pinned language as a run warning and records it in `warnings`.
+fn language_warning(
+    reporter: Arc<dyn Reporter>,
+    warnings: Arc<Mutex<Vec<String>>>,
+) -> LanguageNotifier {
+    Box::new(move |language| {
+        let warning =
+            format!("language detected as {language}; pass --language to force another one");
+        reporter.event(&Event::Warning(warning.clone()));
+        warnings
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(warning);
+    })
 }
 
 /// Loads the whisper model, giving up if the run is cancelled meanwhile.
@@ -511,12 +536,17 @@ async fn run_job(
 async fn load_local(
     model_path: &Path,
     threads: usize,
+    on_language_pinned: LanguageNotifier,
     cancel: &CancellationToken,
 ) -> Result<Arc<dyn Transcriber>, SrttyError> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(SrttyError::Interrupted),
-        loaded = crate::local::LocalWhisper::load(model_path, threads) => Ok(Arc::new(loaded?)),
+        loaded = crate::local::LocalWhisper::load(model_path, threads) => {
+            let mut whisper = loaded?;
+            whisper.on_language_pinned(on_language_pinned);
+            Ok(Arc::new(whisper))
+        }
     }
 }
 
@@ -524,6 +554,7 @@ async fn load_local(
 async fn load_local(
     _model_path: &Path,
     _threads: usize,
+    _on_language_pinned: LanguageNotifier,
     _cancel: &CancellationToken,
 ) -> Result<Arc<dyn Transcriber>, SrttyError> {
     Err(local_unavailable())

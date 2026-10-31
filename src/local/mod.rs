@@ -37,6 +37,9 @@ const MIN_SAMPLES: usize = SAMPLE_RATE / 10;
 const NO_SPEECH_THRESHOLD: f32 = 0.6;
 /// …and its tokens are unlikely.
 const LOGPROB_THRESHOLD: f32 = -1.0;
+/// Least probability of a detected language for it to be pinned: a chunk that
+/// opens with music gives a doubtful detection, which must not spread.
+const PIN_MIN_PROB: f32 = 0.8;
 
 /// Checks that `path` exists and starts with the ggml magic bytes.
 pub fn check_ggml_magic(path: &Path) -> Result<(), SrttyError> {
@@ -88,6 +91,20 @@ fn quiet_whisper() {
     whisper_rs::install_logging_hooks();
 }
 
+/// The short code of language `id` when whisper gave it a probability of at
+/// least `PIN_MIN_PROB`; `None` for a doubtful detection or an unknown id.
+fn confident_language(id: i32, probs: &[f32]) -> Option<&'static str> {
+    let prob = *probs.get(usize::try_from(id).ok()?)?;
+    if prob >= PIN_MIN_PROB {
+        whisper_rs::get_lang_str(id)
+    } else {
+        None
+    }
+}
+
+/// Called with the language code once a detected language is pinned.
+pub type LanguageNotifier = Box<dyn Fn(&str) + Send + Sync>;
+
 /// Keeps a segment unless it is probably silence (`no_speech_prob > 0.6`) and
 /// its tokens are unlikely (mean log probability below -1), as OpenAI Whisper
 /// does against hallucinations.
@@ -100,8 +117,11 @@ pub struct LocalWhisper {
     ctx: Arc<WhisperContext>,
     name: String,
     threads: usize,
-    /// Language detected on the first chunk with words, given to the next ones.
+    /// Language confidently detected on the first chunk with words, given to
+    /// the next ones.
     pinned_language: OnceLock<String>,
+    /// Told once when `pinned_language` is set.
+    on_pinned: Option<LanguageNotifier>,
     /// Number of `state.full` calls in progress.
     running: Arc<AtomicUsize>,
 }
@@ -133,8 +153,15 @@ impl LocalWhisper {
             ),
             threads,
             pinned_language: OnceLock::new(),
+            on_pinned: None,
             running: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    /// Calls `notify` with the language code when a detected language gets
+    /// pinned, which happens at most once.
+    pub fn on_language_pinned(&mut self, notify: LanguageNotifier) {
+        self.on_pinned = Some(notify);
     }
 
     #[cfg(test)]
@@ -165,11 +192,11 @@ impl Transcriber for LocalWhisper {
         if samples.len() < MIN_SAMPLES {
             return Ok(Transcript::default());
         }
+        // `None`: the blocking job detects the language itself.
         let language = opts
             .language
             .clone()
-            .or_else(|| self.pinned_language.get().cloned())
-            .unwrap_or_else(|| "auto".into());
+            .or_else(|| self.pinned_language.get().cloned());
 
         let abort = Arc::new(AtomicBool::new(false));
         let _abort_on_drop = AbortOnDrop(Arc::clone(&abort));
@@ -182,16 +209,17 @@ impl Transcriber for LocalWhisper {
             abort,
             running: Arc::clone(&self.running),
         };
-        let transcript = tokio::task::spawn_blocking(move || run_full(job))
+        let (transcript, detected) = tokio::task::spawn_blocking(move || run_full(job))
             .await
             .map_err(|e| fatal(&e))?
             .map_err(|e| fatal(&e))?;
 
-        if opts.language.is_none()
-            && !transcript.words.is_empty()
-            && let Some(language) = &transcript.language
+        if !transcript.words.is_empty()
+            && let Some(language) = detected
+            && self.pinned_language.set(language.to_string()).is_ok()
+            && let Some(notify) = &self.on_pinned
         {
-            let _ = self.pinned_language.set(language.clone());
+            notify(language);
         }
         Ok(transcript)
     }
@@ -230,7 +258,8 @@ impl Drop for Running {
 struct Job {
     ctx: Arc<WhisperContext>,
     samples: Vec<f32>,
-    language: String,
+    /// The language to decode in, or `None` to detect it.
+    language: Option<String>,
     prompt: Option<String>,
     threads: usize,
     abort: Arc<AtomicBool>,
@@ -244,15 +273,28 @@ unsafe extern "C" fn abort_requested(data: *mut c_void) -> bool {
 }
 
 /// Runs whisper.cpp on one chunk and reads its segments and tokens back.
-fn run_full(job: Job) -> Result<Transcript, WhisperError> {
+///
+/// Without a language, it is detected first on the opening 30 s: a confident
+/// detection is used for this chunk and returned so that it can be pinned; a
+/// doubtful one is left to whisper.cpp (`auto`) and not returned.
+fn run_full(job: Job) -> Result<(Transcript, Option<&'static str>), WhisperError> {
     let mut state = job.ctx.create_state()?;
+    let detected = match job.language {
+        Some(_) => None,
+        None => {
+            state.pcm_to_mel(&job.samples, job.threads)?;
+            let (id, probs) = state.lang_detect(0, job.threads)?;
+            confident_language(id, &probs)
+        }
+    };
+    let language = job.language.as_deref().or(detected).unwrap_or("auto");
     let mut params = FullParams::new(SamplingStrategy::BeamSearch {
         beam_size: 5,
         patience: -1.0,
     });
     params.set_n_threads(c_int::try_from(job.threads).unwrap_or(c_int::MAX));
     params.set_translate(false);
-    params.set_language(Some(&job.language));
+    params.set_language(Some(language));
     params.set_token_timestamps(true);
     params.set_suppress_nst(true);
     // print_realtime writes to stdout; the others would clutter the dashboard.
@@ -271,6 +313,8 @@ fn run_full(job: Job) -> Result<Transcript, WhisperError> {
         params.set_abort_callback_user_data(Arc::as_ptr(&job.abort) as *mut c_void);
     }
     {
+        // Counts only `full`, the part the abort flag can stop; the mel and the
+        // language detection above cannot be aborted.
         let _running = Running::start(&job.running);
         state.full(params, &job.samples)?;
     }
@@ -317,13 +361,14 @@ fn run_full(job: Job) -> Result<Transcript, WhisperError> {
         tokens.push(pieces);
     }
 
-    Ok(Transcript {
+    let transcript = Transcript {
         text: text.join(" "),
         words: words_from_tokens(&tokens),
         segments,
         language: whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(String::from),
         cost_usd: None,
-    })
+    };
+    Ok((transcript, detected))
 }
 
 #[cfg(test)]
@@ -419,6 +464,20 @@ mod tests {
         assert!(stdout.contains("1 passed"), "{stdout}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(!stderr.contains("whisper_"), "{stderr}");
+    }
+
+    #[test]
+    fn only_a_confident_detection_is_pinned() {
+        let fr = whisper_rs::get_lang_id("fr").unwrap();
+        let mut probs = vec![0.0f32; whisper_rs::get_lang_max_id() as usize + 1];
+        probs[fr as usize] = 0.95;
+        assert_eq!(confident_language(fr, &probs), Some("fr"));
+        probs[fr as usize] = 0.5;
+        assert_eq!(confident_language(fr, &probs), None);
+        let past_the_end = i32::try_from(probs.len()).unwrap();
+        assert_eq!(confident_language(past_the_end, &[1.0; 200]), None);
+        assert_eq!(confident_language(past_the_end, &probs), None);
+        assert_eq!(confident_language(-1, &probs), None);
     }
 
     #[test]
@@ -536,13 +595,19 @@ mod tests {
             assert!(!task.is_finished(), "transcribe ended before whisper ran");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // `running` counts `state.full` only, so the drop lands in the part
+        // the abort flag can stop.
         task.abort();
 
+        // `full` starts with the mel of the whole 300 s, which cannot be
+        // aborted and may take a few seconds on a small CI machine. A run that
+        // is not aborted takes far longer than 10 s, so the bound still tells
+        // them apart.
         let aborted = Instant::now();
         while whisper.running() > 0 {
             assert!(
-                aborted.elapsed() < Duration::from_secs(2),
-                "whisper still running 2 s after the drop"
+                aborted.elapsed() < Duration::from_secs(10),
+                "whisper still running 10 s after the drop"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -560,5 +625,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(whisper.pinned_language().as_deref(), Some("fr"));
+    }
+
+    #[tokio::test]
+    async fn pinning_the_language_is_notified_once() {
+        let Some(model) = test_model() else { return };
+        let mut whisper = LocalWhisper::load(&model, TEST_THREADS).await.unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        whisper.on_language_pinned(Box::new({
+            let seen = Arc::clone(&seen);
+            move |language: &str| seen.lock().unwrap().push(language.to_string())
+        }));
+        let sample = write_sample(SAMPLE, SAMPLE_S).unwrap();
+        for _ in 0..2 {
+            whisper
+                .transcribe(&sample.chunk, &TranscribeOptions::default())
+                .await
+                .unwrap();
+        }
+        assert_eq!(*seen.lock().unwrap(), ["fr"]);
     }
 }

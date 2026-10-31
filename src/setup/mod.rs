@@ -1378,6 +1378,8 @@ mod tests {
                 match self.outcome {
                     Fetch::Write => {
                         std::fs::create_dir_all(dest.parent().unwrap())?;
+                        // The real download renames over the old file.
+                        let _ = std::fs::remove_file(dest);
                         std::fs::write(dest, MODEL_BYTES)?;
                         Ok(())
                     }
@@ -1387,17 +1389,25 @@ mod tests {
             }
         }
 
-        /// Passes or fails every test, and counts its calls.
+        /// What every sample test gives.
+        enum Tested {
+            /// That many words in French.
+            Words(usize),
+            Fail,
+            Interrupt,
+        }
+
+        /// Gives the same result to every test, and counts its calls.
         struct FakeLocalTester {
             calls: AtomicUsize,
-            passes: bool,
+            result: Tested,
         }
 
         impl FakeLocalTester {
-            fn new(passes: bool) -> Self {
+            fn new(result: Tested) -> Self {
                 Self {
                     calls: AtomicUsize::new(0),
-                    passes,
+                    result,
                 }
             }
         }
@@ -1407,14 +1417,14 @@ mod tests {
             async fn test(&self, model_path: &Path) -> Result<LocalTestOutcome, SrttyError> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 assert!(model_path.is_file(), "{}", model_path.display());
-                if self.passes {
-                    Ok(LocalTestOutcome {
-                        words: 87,
+                match self.result {
+                    Tested::Words(words) => Ok(LocalTestOutcome {
+                        words,
                         secs: 4.26,
                         language: Some("fr".into()),
-                    })
-                } else {
-                    Err(SrttyError::Config("cannot load the whisper model".into()))
+                    }),
+                    Tested::Fail => Err(SrttyError::Config("cannot load the whisper model".into())),
+                    Tested::Interrupt => Err(SrttyError::Interrupted),
                 }
             }
         }
@@ -1430,11 +1440,22 @@ mod tests {
 
         impl Local {
             fn new(fetch: Fetch, test_passes: bool) -> Self {
+                Self::with_test(
+                    fetch,
+                    if test_passes {
+                        Tested::Words(87)
+                    } else {
+                        Tested::Fail
+                    },
+                )
+            }
+
+            fn with_test(fetch: Fetch, tested: Tested) -> Self {
                 Self {
                     dir: tempfile::tempdir().unwrap(),
                     catalog: test_catalog(),
                     fetcher: FakeFetcher::new(fetch),
-                    tester: FakeLocalTester::new(test_passes),
+                    tester: FakeLocalTester::new(tested),
                     api_tester: FakeTester::new(usable()),
                 }
             }
@@ -1690,6 +1711,144 @@ mod tests {
             assert_eq!(p.asked(MODEL_MENU), 2);
             assert_eq!(l.fetcher.calls(), 1);
             assert_local_provider(&l.config(), &l.model_path());
+        }
+
+        #[tokio::test]
+        async fn local_test_without_words_is_a_failure() {
+            let l = Local::with_test(Fetch::Write, Tested::Words(0));
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(true),
+                Answer::Confirm(true),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert!(
+                p.said.contains(
+                    &"✘ The model could not be used: it produced no words on the sample"
+                        .to_string()
+                ),
+                "{:?}",
+                p.said
+            );
+            assert!(
+                !p.said.iter().any(|m| m.contains("Test passed")),
+                "{:?}",
+                p.said
+            );
+            assert_eq!(p.asked("Keep this model anyway?"), 1);
+            assert_local_provider(&l.config(), &l.model_path());
+        }
+
+        #[tokio::test]
+        async fn local_damaged_file_is_announced_before_the_download() {
+            let l = Local::new(Fetch::Write, true);
+            std::fs::create_dir_all(l.models_dir()).unwrap();
+            // Right size, wrong content: listed as downloaded, then rejected.
+            let damaged = vec![0u8; MODEL_BYTES.len()];
+            std::fs::write(l.model_path(), damaged).unwrap();
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert!(
+                p.options[1][TINY].ends_with("(downloaded)"),
+                "{:?}",
+                p.options[1]
+            );
+            let checking = "Checking ggml-tiny-test.bin…".to_string();
+            let damaged =
+                "! ggml-tiny-test.bin is incomplete or damaged; it will be downloaded again."
+                    .to_string();
+            let at = |line: &String| p.said.iter().position(|m| m == line);
+            assert!(at(&checking) < at(&damaged), "{:?}", p.said);
+            assert!(at(&checking).is_some(), "{:?}", p.said);
+            assert!(p.prompts.iter().any(|m| m.starts_with("Download ")));
+            assert_eq!(l.fetcher.calls(), 1);
+            assert_eq!(std::fs::read(l.model_path()).unwrap(), MODEL_BYTES);
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn local_unreadable_file_is_reported_and_downloaded_again() {
+            use std::os::unix::fs::PermissionsExt;
+            let l = Local::new(Fetch::Write, true);
+            std::fs::create_dir_all(l.models_dir()).unwrap();
+            std::fs::write(l.model_path(), MODEL_BYTES).unwrap();
+            std::fs::set_permissions(l.model_path(), std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+            if std::fs::read(l.model_path()).is_ok() {
+                eprintln!("skipped: the file stays readable (running as root)");
+                return;
+            }
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            assert!(
+                p.said
+                    .iter()
+                    .any(|m| m.starts_with("! Could not check ggml-tiny-test.bin: ")),
+                "{:?}",
+                p.said
+            );
+            assert!(p.prompts.iter().any(|m| m.starts_with("Download ")));
+            assert_eq!(l.fetcher.calls(), 1);
+            assert_local_provider(&l.config(), &l.model_path());
+        }
+
+        #[tokio::test]
+        async fn local_interrupt_during_the_test_propagates() {
+            let l = Local::with_test(Fetch::Write, Tested::Interrupt);
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(TINY),
+                Answer::Confirm(true),
+                Answer::Confirm(true),
+            ]);
+
+            let err = run_setup(&mut p, &l.ctx()).await.unwrap_err();
+
+            assert!(matches!(err, SrttyError::Interrupted), "{err}");
+            assert_eq!(l.tester.calls.load(Ordering::SeqCst), 1);
+            assert!(!l.dir.path().join("config.toml").exists());
+        }
+
+        #[tokio::test]
+        async fn local_relative_path_is_written_absolute() {
+            let l = Local::new(Fetch::Write, true);
+            let own = l.dir.path().join("own.bin");
+            std::fs::write(&own, MODEL_BYTES).unwrap();
+            // `own` reached from the current directory through `..` components.
+            let cwd = std::env::current_dir().unwrap();
+            let up = "../".repeat(cwd.components().count() - 1);
+            let relative = format!("{up}{}", own.strip_prefix("/").unwrap().display());
+            assert!(Path::new(&relative).is_relative());
+            let mut p = ScriptedPrompter::new(vec![
+                Answer::Select(LOCAL),
+                Answer::Select(OWN_FILE),
+                text(&relative),
+                Answer::Confirm(false),
+            ]);
+
+            run_setup(&mut p, &l.ctx()).await.unwrap();
+
+            let written = l.config().providers["local"].model_path.clone().unwrap();
+            assert!(written.is_absolute(), "{}", written.display());
+            assert_eq!(written.canonicalize().unwrap(), own.canonicalize().unwrap());
         }
 
         #[tokio::test]

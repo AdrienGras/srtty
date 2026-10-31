@@ -71,7 +71,7 @@ pub async fn choose_local_model(
         let path = match local.catalog.get(i) {
             Some(model) => {
                 let dest = local.models_dir.join(model.file);
-                if is_complete(&dest, model.bytes, model.sha256)? {
+                if already_downloaded(p, model, &dest).await? {
                     p.say(&format!("✔ {} is already downloaded.", model.file));
                 } else {
                     if !p.confirm(
@@ -116,8 +116,8 @@ pub async fn choose_local_model(
         )? {
             return Ok(path);
         }
-        match local.tester.test(&path).await {
-            Ok(outcome) => {
+        let failure = match local.tester.test(&path).await {
+            Ok(outcome) if outcome.words > 0 => {
                 p.say(&format!(
                     "✔ Test passed: {} words in {:.1} s (language: {}).",
                     outcome.words,
@@ -126,13 +126,49 @@ pub async fn choose_local_model(
                 ));
                 return Ok(path);
             }
+            Ok(_) => "it produced no words on the sample".to_string(),
             Err(SrttyError::Interrupted) => return Err(SrttyError::Interrupted),
-            Err(e) => {
-                p.say(&format!("✘ The model could not be used: {e}"));
-                if p.confirm("Keep this model anyway?", false)? {
-                    return Ok(path);
-                }
-            }
+            Err(e) => e.to_string(),
+        };
+        p.say(&format!("✘ The model could not be used: {failure}"));
+        if p.confirm("Keep this model anyway?", false)? {
+            return Ok(path);
+        }
+    }
+}
+
+/// Whether `dest` already holds `model`. An existing file is hashed on a
+/// blocking thread, so that Ctrl-C still interrupts `setup`. A file that fails
+/// the check, or cannot be read, is reported and will be downloaded again.
+async fn already_downloaded(
+    p: &mut dyn Prompter,
+    model: &CatalogModel,
+    dest: &Path,
+) -> Result<bool, SrttyError> {
+    if !dest.exists() {
+        return Ok(false);
+    }
+    p.say(&format!("Checking {}…", model.file));
+    let check = tokio::task::spawn_blocking({
+        let (dest, bytes, sha256) = (dest.to_path_buf(), model.bytes, model.sha256);
+        move || is_complete(&dest, bytes, sha256)
+    });
+    let checked = tokio::select! {
+        checked = check => checked.map_err(std::io::Error::from)?,
+        _ = tokio::signal::ctrl_c() => return Err(SrttyError::Interrupted),
+    };
+    match checked {
+        Ok(true) => Ok(true),
+        Ok(false) => {
+            p.say(&format!(
+                "! {} is incomplete or damaged; it will be downloaded again.",
+                model.file
+            ));
+            Ok(false)
+        }
+        Err(e) => {
+            p.say(&format!("! Could not check {}: {e}", model.file));
+            Ok(false)
         }
     }
 }

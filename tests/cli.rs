@@ -132,6 +132,35 @@ async fn e2e_writes_srt_and_json_summary() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn e2e_plain_progress_has_no_ansi() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(ENDPOINT))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(fixture("deepgram.json"), "application/json"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let sb = Sandbox::new(&format!("{}/v1", server.uri()), "deepgram/nova-3", 300.0);
+
+    let mut cmd = sb.cmd_with_key();
+    cmd.arg(&sb.input)
+        .args(["--format", "srt"])
+        .env("NO_COLOR", "1");
+    let out = run(cmd).await;
+
+    let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
+    assert_eq!(out.status.code(), Some(0), "stderr: {stderr}");
+    assert!(
+        stderr.contains("transcribe: chunk 1/1 done"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("done: "), "stderr: {stderr}");
+    assert!(!stdout.contains('\x1b') && !stderr.contains('\x1b'));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn e2e_dry_run_makes_no_request() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

@@ -1,6 +1,7 @@
 //! Live dashboard: an inline Ratatui viewport under the cursor, redrawn on every
 //! event and on a ticker, behind the `Reporter` trait.
 
+pub mod recap;
 pub mod state;
 pub mod view;
 
@@ -23,6 +24,40 @@ use crate::report::{Event, Reporter};
 
 /// Redraw period of the ticker, fast enough for the spinner and the clock.
 pub const TICK: Duration = Duration::from_millis(100);
+
+/// How a transcription run shows its progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    /// `--quiet`: no progress at all.
+    Quiet,
+    /// One plain line per event on stderr, without ANSI codes.
+    Plain,
+    /// The live inline viewport on stderr.
+    Dashboard,
+}
+
+/// Picks the display mode. The dashboard needs both stdout and stderr on a
+/// terminal: crossterm writes its cursor position query to stdout, which would
+/// end up in a pipe. `--json`, a non-empty `NO_COLOR` or `TERM=dumb` also fall
+/// back to plain lines. See design decision 1 of plan 3.
+pub fn display_mode(
+    quiet: bool,
+    json: bool,
+    stdout_tty: bool,
+    stderr_tty: bool,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> DisplayMode {
+    if quiet {
+        return DisplayMode::Quiet;
+    }
+    let no_color = env("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let dumb = env("TERM").as_deref() == Some("dumb");
+    if json || !stdout_tty || !stderr_tty || no_color || dumb {
+        DisplayMode::Plain
+    } else {
+        DisplayMode::Dashboard
+    }
+}
 
 /// How the dashboard reaches the terminal; swapped for a `TestBackend` in tests.
 pub struct Screen<B: Backend> {
@@ -419,6 +454,49 @@ mod tests {
         d.finish();
         d.start_ticker(TICK);
         assert_eq!(ticker_id(&d), None);
+    }
+
+    #[test]
+    fn display_mode_rules() {
+        let none = |_: &str| None;
+        let env =
+            |k: &'static str, v: &'static str| move |name: &str| (name == k).then(|| v.to_string());
+        assert_eq!(
+            display_mode(false, false, true, true, &none),
+            DisplayMode::Dashboard
+        );
+        assert_eq!(
+            display_mode(true, false, true, true, &none),
+            DisplayMode::Quiet
+        );
+        assert_eq!(
+            display_mode(true, true, false, false, &none),
+            DisplayMode::Quiet
+        );
+        assert_eq!(
+            display_mode(false, true, true, true, &none),
+            DisplayMode::Plain
+        ); // --json
+        assert_eq!(
+            display_mode(false, false, false, true, &none),
+            DisplayMode::Plain
+        ); // stdout piped
+        assert_eq!(
+            display_mode(false, false, true, false, &none),
+            DisplayMode::Plain
+        ); // stderr redirected
+        assert_eq!(
+            display_mode(false, false, true, true, &env("NO_COLOR", "1")),
+            DisplayMode::Plain
+        );
+        assert_eq!(
+            display_mode(false, false, true, true, &env("NO_COLOR", "")),
+            DisplayMode::Dashboard
+        );
+        assert_eq!(
+            display_mode(false, false, true, true, &env("TERM", "dumb")),
+            DisplayMode::Plain
+        );
     }
 
     #[test]

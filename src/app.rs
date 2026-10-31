@@ -2,10 +2,11 @@
 //! `setup`, or a transcription run with its checks, dry run and cost confirmation.
 
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use ratatui::crossterm::style::Stylize;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
@@ -13,7 +14,11 @@ use crate::assemble::CueRules;
 use crate::cache::{CacheParams, ChunkCache};
 use crate::cli::{Cli, Command, CompatAction, ConfigAction};
 use crate::compat::{CompatEntry, CompatList, compat_url, estimate_cost_usd, provider_key};
-use crate::config::{self, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig};
+use crate::config::{
+    self, ApiKey, Config, KeyState, ProviderKind, RequestMode, Resolved, SubtitleConfig,
+};
+use crate::dashboard::recap::recap_lines;
+use crate::dashboard::{Dashboard, DisplayMode, TICK, display_mode, stderr_screen};
 use crate::error::SrttyError;
 use crate::media::plan_chunks;
 use crate::output::speaker_prefix_reserve;
@@ -231,6 +236,26 @@ pub(crate) fn print_stdout(text: &str) -> Result<(), SrttyError> {
     Ok(())
 }
 
+/// What a run needs once its settings are checked.
+struct Job {
+    input: PathBuf,
+    r: Resolved,
+    api_key: ApiKey,
+    base_url: String,
+}
+
+/// How a run ended, before anything is printed.
+enum Outcome {
+    DryRun {
+        plan: Vec<(f64, f64)>,
+        estimate: Option<f64>,
+    },
+    Done(Summary),
+}
+
+/// A transcription run: checks the settings, shows progress in the chosen
+/// display mode, and erases any live display before printing the outcome or
+/// returning an error.
 async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     let started = Instant::now();
     let input = cli.input.clone().ok_or_else(|| {
@@ -249,16 +274,86 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
             r.provider_name
         ))
     })?;
+
+    let mut mode = display_mode(
+        cli.quiet,
+        cli.json,
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+        &|name| std::env::var(name).ok(),
+    );
+    let reporter: Arc<dyn Reporter> = match mode {
+        DisplayMode::Quiet => Arc::new(PlainReporter::new(Box::new(std::io::sink()))),
+        DisplayMode::Plain => Arc::new(PlainReporter::new(Box::new(std::io::stderr()))),
+        DisplayMode::Dashboard => {
+            match Dashboard::open(stderr_screen(), input_name(&input), r.model.clone()) {
+                Ok(dashboard) => {
+                    dashboard.start_ticker(TICK);
+                    dashboard
+                }
+                // The terminal did not answer the cursor position query.
+                Err(_) => {
+                    mode = DisplayMode::Plain;
+                    Arc::new(PlainReporter::new(Box::new(std::io::stderr())))
+                }
+            }
+        }
+    };
+
+    let cancel = CancellationToken::new();
+    cancel_on_ctrl_c(cancel.clone());
+    let job = Job {
+        input,
+        r,
+        api_key,
+        base_url,
+    };
+    let outcome = run_job(&cli, job, Arc::clone(&reporter), cancel, started).await;
+    reporter.finish();
+
+    match outcome? {
+        Outcome::DryRun { plan, estimate } => print_dry_run(&plan, estimate, cli.json),
+        Outcome::Done(summary) if cli.json => {
+            print_stdout(&serde_json::to_string(&summary).map_err(std::io::Error::from)?)
+        }
+        Outcome::Done(summary) => match mode {
+            DisplayMode::Dashboard => print_recap(&summary),
+            DisplayMode::Plain => {
+                eprintln!("{}", summary_line(&summary));
+                Ok(())
+            }
+            DisplayMode::Quiet => Ok(()),
+        },
+    }
+}
+
+/// The input file name shown in the dashboard title, or the whole path if it has none.
+fn input_name(input: &Path) -> String {
+    input.file_name().map_or_else(
+        || input.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// Everything from extraction to the written files. Prints nothing itself
+/// beyond progress events and the cost question.
+async fn run_job(
+    cli: &Cli,
+    job: Job,
+    reporter: Arc<dyn Reporter>,
+    cancel: CancellationToken,
+    started: Instant,
+) -> Result<Outcome, SrttyError> {
+    let Job {
+        input,
+        r,
+        api_key,
+        base_url,
+    } = job;
     let cache_dir = paths::cache_dir();
     let compat = CompatList::load(&cache_dir);
     let entry = provider_key(&base_url).and_then(|provider| compat.find(provider, &r.model));
 
-    let progress: Box<dyn Write + Send> = if cli.quiet {
-        Box::new(std::io::sink())
-    } else {
-        Box::new(std::io::stderr())
-    };
-    let reporter: Arc<dyn Reporter> = Arc::new(PlainReporter::new(progress));
     let mut warnings = Vec::new();
     if r.prompt.is_some()
         && r.provider.request_mode == RequestMode::Multipart
@@ -269,8 +364,6 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
         warnings.push(warning);
     }
 
-    let cancel = CancellationToken::new();
-    cancel_on_ctrl_c(cancel.clone());
     let prep = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(SrttyError::Interrupted),
@@ -296,14 +389,18 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
                 SILENCE_WINDOW_S,
             )
         });
-        return print_dry_run(&plan, estimate, cli.json);
+        return Ok(Outcome::DryRun { plan, estimate });
     }
 
     let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let (threshold, yes) = (r.confirm_above_usd, cli.yes);
+    let asker = Arc::clone(&reporter);
     // The answer is read on a blocking thread so that Ctrl-C still interrupts the prompt.
     let decision = tokio::task::spawn_blocking(move || {
-        confirm_cost(estimate, threshold, yes, interactive, &mut ask_on_terminal)
+        confirm_cost(estimate, threshold, yes, interactive, &mut |usd| {
+            asker.suspend();
+            ask_on_terminal(usd)
+        })
     });
     tokio::select! {
         biased;
@@ -345,15 +442,7 @@ async fn transcribe(cli: Cli) -> Result<(), SrttyError> {
     summary.elapsed_s = started.elapsed().as_secs_f64();
     warnings.append(&mut summary.warnings);
     summary.warnings = warnings;
-
-    if cli.json {
-        print_stdout(&serde_json::to_string(&summary).map_err(std::io::Error::from)?)
-    } else {
-        if !cli.quiet {
-            eprintln!("{}", summary_line(&summary));
-        }
-        Ok(())
-    }
+    Ok(Outcome::Done(summary))
 }
 
 /// Cancels `cancel` on the first Ctrl-C.
@@ -406,6 +495,18 @@ fn print_dry_run(plan: &[(f64, f64)], estimate: Option<f64>, json: bool) -> Resu
     });
     let mut err = std::io::stderr().lock();
     writeln!(err, "{}", lines.join("\n"))?;
+    Ok(())
+}
+
+/// Prints the dashboard recap on stderr, with a green check mark.
+fn print_recap(s: &Summary) -> Result<(), SrttyError> {
+    let mut err = std::io::stderr().lock();
+    for line in recap_lines(s) {
+        match line.strip_prefix('✔') {
+            Some(rest) => writeln!(err, "{}{rest}", "✔".green())?,
+            None => writeln!(err, "{line}")?,
+        }
+    }
     Ok(())
 }
 

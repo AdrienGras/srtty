@@ -67,7 +67,12 @@ fn not_ggml(path: &Path) -> SrttyError {
 /// accepts full names (`french`), which are refused: only its short codes pass.
 pub fn check_language(code: &str) -> Result<(), SrttyError> {
     quiet_whisper();
-    let short = whisper_rs::get_lang_id(code).and_then(whisper_rs::get_lang_str);
+    // whisper-rs panics on a NUL byte; no language code contains one.
+    let short = if code.contains('\0') {
+        None
+    } else {
+        whisper_rs::get_lang_id(code).and_then(whisper_rs::get_lang_str)
+    };
     match short {
         Some(short) if short == code => Ok(()),
         _ => Err(SrttyError::Usage(format!(
@@ -76,8 +81,9 @@ pub fn check_language(code: &str) -> Result<(), SrttyError> {
     }
 }
 
-/// Sends whisper.cpp and ggml logs to the `log` crate, which has no backend
-/// here, so they never reach stderr. Only the first call has an effect.
+/// Routes whisper.cpp and ggml logs through whisper-rs hooks that, without its
+/// `log_backend` or `tracing_backend` feature, drop them, so they never reach
+/// stderr. Only the first call has an effect.
 fn quiet_whisper() {
     whisper_rs::install_logging_hooks();
 }
@@ -389,7 +395,7 @@ mod tests {
     fn check_language_cases() {
         check_language("fr").unwrap();
         check_language("en").unwrap();
-        for code in ["french", "xx"] {
+        for code in ["french", "xx", "f\0r"] {
             let err = check_language(code).unwrap_err();
             assert_eq!(err.exit_code(), 1);
             assert!(err.to_string().contains("ISO 639-1"), "{err}");

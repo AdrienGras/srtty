@@ -4,8 +4,8 @@ Journal antéchronologique : l'état courant en haut, l'historique en bas. Mettr
 
 ## État courant (2026-10-31)
 
-- Plans 1 et 2 livrés et mergés (PR #1, PR #2). **Plan 3 exécuté** sur `feat/plan-3-dashboard`, PR ouverte : à faire merger par Adrien. 285 tests (262 unitaires, 23 de bout en bout). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` sont propres.
-- Prochain travail : **plan 4**, le backend local whisper-rs. À démarrer depuis `main` une fois la PR du plan 3 mergée.
+- Plans 1, 2 et 3 livrés et mergés (PR #1, #2, #3 ; `main` = `e3573c9`). 285 tests (262 unitaires, 23 de bout en bout). `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` et `cargo test` sont propres.
+- Travail en cours : **plan 4**, le backend local whisper-rs, sur `feat/plan-4-local-whisper` (plan : `docs/superpowers/plans/2026-10-31-srtty-4-local-whisper.md`).
 - La CI hebdomadaire `compat` tourne : chaque lundi à 05:17 UTC, plus un déclenchement manuel. Premier run réussi le 2026-10-31 (0,063 $). Le secret `OPENROUTER_API_KEY` est configuré dans le dépôt.
 
 ## Documents de référence

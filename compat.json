@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generated_at": "2026-10-31",
+  "generated_at": "2026-11-09",
   "models": [
     {
       "provider": "groq",
@@ -60,7 +60,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.3,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -70,7 +70,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.3,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -84,7 +84,7 @@
         }
       },
       "usd_per_hour": 0.258,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -98,7 +98,7 @@
         }
       },
       "usd_per_hour": 0.22,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -112,7 +112,7 @@
         }
       },
       "usd_per_hour": 0.22,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -122,7 +122,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.36,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -132,7 +132,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.36,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -142,7 +142,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.96,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -162,7 +162,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.18,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -182,7 +182,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.06,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -192,7 +192,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.18,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -202,7 +202,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.21,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -212,7 +212,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.18,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -222,7 +222,17 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.24,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
+    },
+    {
+      "provider": "openrouter",
+      "id": "moondream/parakeet-ultra",
+      "status": "compatible",
+      "words": true,
+      "fine_segments": true,
+      "diarization": null,
+      "usd_per_hour": 0.06,
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -232,27 +242,27 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.011988,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
       "id": "nvidia/nemotron-3.5-transcribe",
-      "status": "unusable",
-      "words": false,
+      "status": "compatible",
+      "words": true,
       "fine_segments": false,
       "diarization": null,
-      "usd_per_hour": 0.11988,
-      "checked_at": "2026-10-31"
+      "usd_per_hour": 0.06,
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
       "id": "nvidia/parakeet-tdt-0.6b-v3",
       "status": "compatible",
       "words": true,
-      "fine_segments": false,
+      "fine_segments": true,
       "diarization": null,
-      "usd_per_hour": 0.09,
-      "checked_at": "2026-10-31"
+      "usd_per_hour": 0.06,
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -282,7 +292,7 @@
       "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.27,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -292,17 +302,17 @@
       "fine_segments": true,
       "diarization": null,
       "usd_per_hour": 0.36,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
       "id": "openai/whisper-large-v3",
       "status": "compatible",
       "words": true,
-      "fine_segments": true,
+      "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.027,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -312,17 +322,17 @@
       "fine_segments": true,
       "diarization": null,
       "usd_per_hour": 0.011988,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
       "id": "qwen/qwen3-asr-0.6b",
       "status": "compatible",
       "words": true,
-      "fine_segments": true,
+      "fine_segments": false,
       "diarization": null,
       "usd_per_hour": 0.011988,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -332,7 +342,7 @@
       "fine_segments": true,
       "diarization": null,
       "usd_per_hour": 0.027,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     },
     {
       "provider": "openrouter",
@@ -346,7 +356,7 @@
         }
       },
       "usd_per_hour": 0.1,
-      "checked_at": "2026-10-31"
+      "checked_at": "2026-11-09"
     }
   ]
 }
